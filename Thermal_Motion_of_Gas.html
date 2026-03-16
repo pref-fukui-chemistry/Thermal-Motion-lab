@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>分子熱運動 - 究極の完成版シミュレーター</title>
+    <style>
+        body { font-family: 'Segoe UI', 'Hiragino Kaku Gothic ProN', sans-serif; display: flex; flex-direction: row; background: #2c3e50; color: #ecf0f1; margin: 0; height: 100vh; overflow: hidden; }
+        
+        .sidebar { width: 260px; min-width: 260px; background: #34495e; padding: 20px; box-shadow: 2px 0 10px rgba(0,0,0,0.3); z-index: 20; display: flex; flex-direction: column; gap: 20px; transition: margin-left 0.3s ease; position: relative; }
+        .sidebar.hidden { margin-left: -300px; }
+        
+        #restoreSidebar { position: absolute; left: 10px; top: 10px; z-index: 15; background: #34495e; border: none; color: white; padding: 10px; cursor: pointer; border-radius: 4px; display: none; }
+        .close-sidebar { position: absolute; right: 10px; top: 10px; background: none; border: none; color: #95a5a6; cursor: pointer; font-size: 1.2em; }
+
+        h2 { margin: 0; font-size: 1.1em; color: #3498db; padding-right: 20px; }
+        .controls { display: flex; flex-direction: column; gap: 15px; flex-grow: 1; overflow-y: auto; padding-right: 5px; }
+        .label-group { display: flex; flex-direction: column; gap: 5px; }
+        .temp-ctrl-container { display: flex; align-items: center; gap: 5px; margin-top: 5px; }
+        .btn-step { background: #2980b9; border: none; color: white; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 0.8em; font-weight: bold; }
+        .btn-step:hover { background: #3498db; }
+        input[type="range"] { flex-grow: 1; cursor: pointer; }
+        
+        .switch-group { padding-top: 15px; border-top: 1px solid #5d6d7e; display: flex; align-items: center; justify-content: space-between; }
+        .switch { position: relative; display: inline-block; width: 44px; height: 22px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #7f8c8d; transition: .4s; border-radius: 22px; }
+        .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
+        input:checked + .slider { background-color: #e67e22; }
+        input:checked + .slider:before { transform: translateX(22px); }
+
+        .radio-group { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid #5d6d7e; }
+        .radio-group label { font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 0.85em; }
+        .radio-section-title { font-size: 0.75em; color: #95a5a6; margin-top: 5px; text-transform: uppercase; letter-spacing: 1px; }
+        
+        .color-legend { margin-top: auto; padding-top: 20px; border-top: 1px solid #5d6d7e; }
+        .legend-title { font-size: 0.75em; color: #95a5a6; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
+        .legend-bar { height: 10px; width: 100%; background: linear-gradient(to right, hsl(240, 70%, 50%), hsl(120, 70%, 50%), hsl(0, 70%, 50%)); border-radius: 5px; }
+        .legend-labels { display: flex; justify-content: space-between; font-size: 0.7em; margin-top: 5px; color: #ecf0f1; }
+        
+        .main-content { flex-grow: 1; display: flex; flex-direction: column; background: #f0f3f6; min-width: 0; height: 100vh; position: relative; }
+        .canvas-container { flex: 1; display: flex; flex-direction: column; padding: 10px; gap: 10px; box-sizing: border-box; min-height: 0; }
+        
+        canvas { border-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); width: 100%; height: 100%; display: block; min-height: 0; min-width: 0; }
+        #simCanvas { flex: 2.5; background: #000; transition: flex 0.3s ease; }
+        #simCanvas.expanded { flex: 100; }
+        
+        .charts-wrapper { flex: 1.5; display: flex; gap: 10px; min-height: 0; transition: all 0.3s ease; }
+        .charts-wrapper.hidden { display: none; }
+        .charts-wrapper canvas { flex: 1; background: #fff; }
+    </style>
+</head>
+<body>
+    <button id="restoreSidebar" title="メニューを表示">☰</button>
+    
+    <div class="sidebar" id="sidebar">
+        <button class="close-sidebar" id="closeSidebar" title="メニューを閉じる">×</button>
+        <h2>分子熱運動<br>シミュレーター</h2>
+        <div class="controls">
+            <div class="label-group">
+                <label>絶対温度 (T): <span id="tempVal">300</span> K</label>
+                <div class="temp-ctrl-container">
+                    <button class="btn-step" id="tempDown">−1</button>
+                    <input type="range" id="tempRange" min="0" max="3000" value="300">
+                    <button class="btn-step" id="tempUp">+1</button>
+                </div>
+            </div>
+            <div class="label-group">
+                <label>分子数 (N): <span id="countVal">100</span></label>
+                <input type="range" id="countRange" min="10" max="1000" value="100">
+            </div>
+            <div class="label-group">
+                <label>原子の大きさ: <span id="radiusVal">8</span> px</label>
+                <input type="range" id="radiusRange" min="2" max="30" value="8">
+            </div>
+            
+            <div class="radio-group">
+                <div class="radio-section-title">単原子分子</div>
+                <label><input type="radio" name="moleculeType" value="He"> ヘリウム (He)</label>
+                <label><input type="radio" name="moleculeType" value="Ar"> アルゴン (Ar)</label>
+                <label><input type="radio" name="moleculeType" value="Xe"> キセノン (Xe)</label>
+                <div class="radio-section-title" style="margin-top:10px;">二原子分子</div>
+                <label><input type="radio" name="moleculeType" value="H2" checked> 水素 (H₂)</label>
+                <label><input type="radio" name="moleculeType" value="N2"> 窒素 (N₂)</label>
+                <label><input type="radio" name="moleculeType" value="O2"> 酸素 (O₂)</label>
+            </div>
+            
+            <div class="switch-group">
+                <span style="font-size: 0.9em; font-weight: bold; color: #e67e22;">分子間力 (実在気体)</span>
+                <label class="switch">
+                    <input type="checkbox" id="vdwSwitch">
+                    <span class="slider"></span>
+                </label>
+            </div>
+
+            <div class="switch-group">
+                <span style="font-size: 0.9em; font-weight: bold; color: #3498db;">グラフを表示</span>
+                <label class="switch">
+                    <input type="checkbox" id="chartToggle">
+                    <span class="slider"></span>
+                </label>
+            </div>
+        </div>
+        <div class="color-legend">
+            <div class="legend-title">分子の速さと色</div>
+            <div class="legend-bar"></div>
+            <div class="legend-labels"><span>遅い</span><span>速い</span></div>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="canvas-container">
+            <canvas id="simCanvas" class="expanded"></canvas>
+            <div class="charts-wrapper hidden" id="chartsWrapper">
+                <canvas id="vChartCanvas"></canvas>
+                <canvas id="eChartCanvas"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d');
+        const vCanvas = document.getElementById('vChartCanvas');
+        const vCtx = vCanvas.getContext('2d');
+        const eCanvas = document.getElementById('eChartCanvas');
+        const eCtx = eCanvas.getContext('2d');
+        const chartsWrapper = document.getElementById('chartsWrapper');
+        const sidebar = document.getElementById('sidebar');
+        const restoreSidebarBtn = document.getElementById('restoreSidebar');
+
+        let temperature = 300, particleCount = 100, molarMass = 2, atomRadius = 8, degreesOfFreedom = 3, moleculeName = "H2";
+        let useVDW = false, showCharts = false;
+        let particles = [];
+
+        const molData = {
+            "He": { mass: 4, dof: 2, bp: 4, isDiatomic: false },
+            "Ar": { mass: 40, dof: 2, bp: 87, isDiatomic: false },
+            "Xe": { mass: 131, dof: 2, bp: 165, isDiatomic: false },
+            "H2": { mass: 2, dof: 3, bp: 20, isDiatomic: true },
+            "N2": { mass: 28, dof: 3, bp: 77, isDiatomic: true },
+            "O2": { mass: 32, dof: 3, bp: 90, isDiatomic: true }
+        };
+
+        function syncCanvasSize() {
+            const oldW = canvas.width;
+            const oldH = canvas.height;
+            let resized = false;
+            const targets = showCharts ? [canvas, vCanvas, eCanvas] : [canvas];
+            targets.forEach(c => {
+                if (c.width !== c.clientWidth || c.height !== c.clientHeight) {
+                    c.width = c.clientWidth; c.height = c.clientHeight;
+                    resized = true;
+                }
+            });
+            if (resized && oldW > 0 && oldH > 0) {
+                const ratioX = canvas.width / oldW;
+                const ratioY = canvas.height / oldH;
+                particles.forEach(p => { p.x *= ratioX; p.y *= ratioY; });
+            }
+        }
+
+        class Molecule {
+            constructor() {
+                const data = molData[moleculeName];
+                this.isDiatomic = data.isDiatomic;
+                this.mass = data.mass;
+                this.x = Math.random() * (canvas.width - 80) + 40;
+                this.y = Math.random() * (canvas.height - 80) + 40;
+                this.angle = Math.random() * Math.PI * 2;
+                this.setSpeedByTemp();
+            }
+            setSpeedByTemp() {
+                const sigma = Math.sqrt((Math.max(temperature, 0.1) * (2/degreesOfFreedom)) / (this.mass * 20));
+                this.vx = sigma * Math.sqrt(-2 * Math.log(Math.random() || 0.0001)) * Math.cos(2 * Math.PI * Math.random());
+                this.vy = sigma * Math.sqrt(-2 * Math.log(Math.random() || 0.0001)) * Math.sin(2 * Math.PI * Math.random());
+                this.vz = sigma * Math.sqrt(-2 * Math.log(Math.random() || 0.0001)) * Math.sin(2 * Math.PI * Math.random());
+                this.omega = this.isDiatomic ? (Math.random() - 0.5) * Math.sqrt(temperature / (this.mass * 50)) : 0;
+            }
+            update() {
+                const limit = 20; // 速度制限
+                this.vx = Math.max(-limit, Math.min(limit, this.vx));
+                this.vy = Math.max(-limit, Math.min(limit, this.vy));
+                
+                this.x += this.vx; this.y += this.vy; this.angle += this.omega;
+                const boundary = this.isDiatomic ? atomRadius * 2 : atomRadius;
+                if (this.x < boundary) { this.x = boundary; this.vx *= -1; }
+                if (this.x > canvas.width - boundary) { this.x = canvas.width - boundary; this.vx *= -1; }
+                if (this.y < boundary) { this.y = boundary; this.vy *= -1; }
+                if (this.y > canvas.height - boundary) { this.y = canvas.height - boundary; this.vy *= -1; }
+            }
+            draw() {
+                const speed = Math.sqrt(this.vx**2 + this.vy**2);
+                const baseColor = `hsl(${Math.max(240 - speed * 40, 0)}, 70%, 50%)`;
+                ctx.save(); ctx.translate(this.x, this.y); ctx.rotate(this.angle);
+                const drawAtom = (ox, oy) => {
+                    const lightAngle = -this.angle - Math.PI/4; 
+                    const gradX = ox + Math.cos(lightAngle) * (atomRadius * 0.4);
+                    const gradY = oy + Math.sin(lightAngle) * (atomRadius * 0.4);
+                    const grad = ctx.createRadialGradient(gradX, gradY, atomRadius * 0.05, ox, oy, atomRadius);
+                    grad.addColorStop(0, '#ffffff'); grad.addColorStop(1, baseColor);
+                    ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(ox, oy, atomRadius, 0, Math.PI * 2); ctx.fill();
+                };
+                if (this.isDiatomic) {
+                    const offset = atomRadius * 0.8; drawAtom(-offset, 0); drawAtom(offset, 0);
+                } else {
+                    drawAtom(0, 0);
+                }
+                ctx.restore();
+            }
+        }
+
+        function resolveCollisions() {
+            const boundarySize = molData[moleculeName].isDiatomic ? atomRadius * 2 : atomRadius;
+            const minDist = boundarySize * 2;
+            const bp = molData[moleculeName].bp;
+            const len = particles.length;
+
+            for (let i = 0; i < len; i++) {
+                for (let j = i + 1; j < len; j++) {
+                    const p1 = particles[i], p2 = particles[j];
+                    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+                    const distSq = dx * dx + dy * dy + 0.1;
+                    
+                    if (useVDW) {
+                        const dist = Math.sqrt(distSq);
+                        const safeDist = Math.max(dist, minDist * 0.5); // 安全装置: 重なり時の無限大防止
+                        if (dist < minDist * 5) {
+                            const tempRatio = bp / Math.max(temperature, 1);
+                            const force = 0.001 * molarMass * Math.pow(tempRatio, 2.5) * (1 - Math.pow(minDist/safeDist, 3));
+                            p1.vx += (dx / safeDist) * force; p1.vy += (dy / safeDist) * force;
+                            p2.vx -= (dx / safeDist) * force; p2.vy -= (dy / safeDist) * force;
+                        }
+                    }
+                    if (distSq < minDist * minDist) {
+                        const collisionAngle = Math.atan2(dy, dx);
+                        const s1 = Math.sqrt(p1.vx**2 + p1.vy**2), s2 = Math.sqrt(p2.vx**2 + p2.vy**2);
+                        const d1 = Math.atan2(p1.vy, p1.vx), d2 = Math.atan2(p2.vy, p2.vx);
+                        let vx1r = s1 * Math.cos(d1 - collisionAngle), vy1r = s1 * Math.sin(d1 - collisionAngle);
+                        let vx2r = s2 * Math.cos(d2 - collisionAngle), vy2r = s2 * Math.sin(d2 - collisionAngle);
+                        if (useVDW && temperature < bp * 1.3) { vx1r *= 0.8; vx2r *= 0.8; }
+                        p1.vx = Math.cos(collisionAngle) * vx2r + Math.cos(collisionAngle + Math.PI/2) * vy1r;
+                        p1.vy = Math.sin(collisionAngle) * vx2r + Math.sin(collisionAngle + Math.PI/2) * vy1r;
+                        p2.vx = Math.cos(collisionAngle) * vx1r + Math.cos(collisionAngle + Math.PI/2) * vy2r;
+                        p2.vy = Math.sin(collisionAngle) * vx1r + Math.sin(collisionAngle + Math.PI/2) * vy2r;
+                        const overlap = minDist - Math.sqrt(distSq);
+                        p1.x -= Math.cos(collisionAngle) * (overlap/2); p1.y -= Math.sin(collisionAngle) * (overlap/2);
+                        p2.x += Math.cos(collisionAngle) * (overlap/2); p2.y += Math.sin(collisionAngle) * (overlap/2);
+                    }
+                }
+            }
+
+            // サーモスタット機能: 設定温度に速度をスケーリング
+            let totalE = 0;
+            particles.forEach(p => { totalE += (p.vx**2 + p.vy**2); });
+            const avgE = totalE / particles.length;
+            const targetE = (Math.max(temperature, 0.1) * (2/degreesOfFreedom)) / (molarMass * 10);
+            const ratio = Math.sqrt(targetE / (avgE || 1));
+            // 急激な変化を避けるためマイルドに補正
+            const k = 0.1; 
+            const scale = 1 + (ratio - 1) * k;
+            particles.forEach(p => { p.vx *= scale; p.vy *= scale; });
+        }
+
+        function drawCharts() {
+            if (!showCharts || vCanvas.width < 50) return;
+            const padL = 70, padB = 60, padR = 20, padT = 20;
+            const binCount = 40; const curT = Math.max(temperature, 0.1);
+            const sigmaSq = (curT * (2/degreesOfFreedom)) / (molarMass * 20);
+
+            vCtx.clearRect(0, 0, vCanvas.width, vCanvas.height);
+            const vw = vCanvas.width - padL - padR, vh = vCanvas.height - padB - padT;
+            vCtx.strokeStyle = "#34495e"; vCtx.lineWidth = 1; vCtx.beginPath();
+            vCtx.moveTo(padL, padT); vCtx.lineTo(padL, padT+vh); vCtx.lineTo(padL+vw, padT+vh); vCtx.stroke();
+            vCtx.fillStyle = "#2c3e50"; vCtx.font = "bold 12px sans-serif"; vCtx.textAlign = "center";
+            vCtx.fillText("分子の速さ", padL + vw/2, padT + vh + 40);
+            vCtx.save(); vCtx.translate(20, padT + vh/2); vCtx.rotate(-Math.PI/2); vCtx.fillText("分子の割合", 0, 0); vCtx.restore();
+
+            const maxV = Math.sqrt(sigmaSq) * 5 + 1.5; const vBins = new Array(binCount).fill(0);
+            particles.forEach(p => { const v = Math.sqrt(p.vx**2 + p.vy**2); const idx = Math.floor((v/maxV)*binCount); if (idx >= 0 && idx < binCount) vBins[idx]++; });
+            vCtx.fillStyle = "rgba(52, 152, 219, 0.7)";
+            vBins.forEach((n, i) => { const den = (n/particles.length)/(maxV/binCount); vCtx.fillRect(padL + i*(vw/binCount), padT+vh, vw/binCount, -Math.min(vh, den*vh*(maxV/10))); });
+            vCtx.strokeStyle = "#e74c3c"; vCtx.lineWidth = 2; vCtx.beginPath();
+            for(let v=0; v<=maxV; v+=maxV/100){ const fv = (v/sigmaSq)*Math.exp(-(v*v)/(2*sigmaSq)); vCtx.lineTo(padL + (v/maxV)*vw, padT+vh - (fv*vh*(maxV/10))); }
+            vCtx.stroke();
+
+            eCtx.clearRect(0, 0, eCanvas.width, eCanvas.height);
+            const ew = eCanvas.width - padL - padR, eh = eCanvas.height - padB - padT;
+            eCtx.strokeStyle = "#34495e"; eCtx.lineWidth = 1; eCtx.beginPath();
+            eCtx.moveTo(padL, padT); eCtx.lineTo(padL, padT+eh); eCtx.lineTo(padL+ew, padT+eh); eCtx.stroke();
+            eCtx.fillStyle = "#2c3e50"; eCtx.font = "bold 12px sans-serif"; eCtx.textAlign = "center";
+            eCtx.fillText("分子の運動エネルギー", padL + ew/2, padT + eh + 40);
+            eCtx.save(); eCtx.translate(20, padT + eh/2); eCtx.rotate(-Math.PI/2); eCtx.fillText("分子の割合", 0, 0); eCtx.restore();
+
+            const kT = (curT * (2/degreesOfFreedom)) / 20; const maxE = 150; const eBins = new Array(binCount).fill(0);
+            particles.forEach(p => { const e = 0.5 * molarMass * (p.vx**2 + p.vy**2 + (p.vz || 0)**2); const idx = Math.floor((e/maxE)*binCount); if (idx >= 0 && idx < binCount) eBins[idx]++; });
+            const eScaleY = eh * 25; eCtx.fillStyle = "rgba(46, 204, 113, 0.7)";
+            eBins.forEach((n, i) => { const den = (n/particles.length)/(maxE/binCount); eCtx.fillRect(padL + i*(ew/binCount), padT+eh, ew/binCount-1, -Math.min(eh, den*eScaleY)); });
+            eCtx.strokeStyle = "#e74c3c"; eCtx.lineWidth = 2; eCtx.beginPath();
+            for(let i=0; i<=100; i++){ const e = (i/100)*maxE; if(e===0){ eCtx.moveTo(padL, padT+eh); continue; } const pe = 2 * Math.sqrt(e/Math.PI) * Math.pow(1/kT, 1.5) * Math.exp(-e/kT); eCtx.lineTo(padL + (e/maxE)*ew, padT + eh - (pe*eScaleY)); }
+            eCtx.stroke();
+        }
+
+        function animate() {
+            syncCanvasSize();
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            resolveCollisions();
+            particles.forEach(p => { p.update(); p.draw(); });
+            if (showCharts) drawCharts();
+            requestAnimationFrame(animate);
+        }
+
+        document.getElementById('tempRange').oninput = (e) => { temperature = parseInt(e.target.value); document.getElementById('tempVal').innerText = temperature; };
+        document.getElementById('tempUp').onclick = () => { temperature = Math.min(3000, temperature + 1); document.getElementById('tempVal').innerText = temperature; document.getElementById('tempRange').value = temperature; };
+        document.getElementById('tempDown').onclick = () => { temperature = Math.max(0, temperature - 1); document.getElementById('tempVal').innerText = temperature; document.getElementById('tempRange').value = temperature; };
+        document.getElementById('countRange').oninput = (e) => { particleCount = e.target.value; document.getElementById('countVal').innerText = particleCount; init(); };
+        document.getElementById('radiusRange').oninput = (e) => { atomRadius = parseInt(e.target.value); document.getElementById('radiusVal').innerText = atomRadius; };
+        document.querySelectorAll('input[name="moleculeType"]').forEach(r => r.onchange = (e) => { moleculeName = e.target.value; init(); });
+        document.getElementById('vdwSwitch').onchange = (e) => useVDW = e.target.checked;
+        document.getElementById('chartToggle').onchange = (e) => { showCharts = e.target.checked; chartsWrapper.classList.toggle('hidden', !showCharts); canvas.classList.toggle('expanded', !showCharts); };
+        document.getElementById('closeSidebar').onclick = () => { sidebar.classList.add('hidden'); restoreSidebarBtn.style.display = 'block'; };
+        restoreSidebarBtn.onclick = () => { sidebar.classList.remove('hidden'); restoreSidebarBtn.style.display = 'none'; };
+
+        function init() {
+            const data = molData[moleculeName];
+            molarMass = data.mass; degreesOfFreedom = data.dof;
+            syncCanvasSize();
+            particles = Array.from({length: particleCount}, () => new Molecule());
+        }
+
+        window.onload = init;
+        animate();
+    </script>
+</body>
+</html>
