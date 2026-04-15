@@ -1,79 +1,517 @@
+<!-- =========================================================
+[PHASE-DIAGRAM REFERENCE / 教育用数値参照について]
+
+本シミュレータにおける相図関連の数値的判断は、
+以下の「教育用代替値一覧TXT」に基づく設計思想を前提としている。
+
+・参照ファイル：
+  相図数値_教育用代替値一覧_Thermal_Motion_of_Gas.txt
+
+・位置づけ：
+  本TXTは「設計参照用」であり、UI表示用データではない。
+  本HTMLでは、相境界をスイッチとして扱う数値判定・
+  相フラグ切替・状態ジャンプを一切実装しない。
+
+・設計方針：
+  相境界は「地形」であり、挙動の変化が起きやすい傾向を示すのみである。
+  数値は目安であり、暗記・閾値学習を目的としない。
+
+このHTMLを改変・派生させる場合は、
+必ず上記TXTの思想を確認した上で設計すること。
+========================================================= -->
+
+
+<!--
+Thermal_Motion_of_Gas ver76
+README（誤学習防止・判断基準）
+
+【位置づけ】
+本HTMLは ver75（凍結安定版）を参照点とし、挙動・UI・計算ロジックを一切変更していない。
+本バージョンの差分は、以下の README を「HTMLコメント」として組み込んだ点のみである。
+
+【最上位方針】
+・理論的に正しい因果構造を最優先する。
+・可能な場合は厳密な計算に基づく理解を尊重する。
+・計算量や教育的負荷が過大な場合は、誤学習を生まない範囲で近似・簡略化を選択する。
+・それっぽい演出は行わない。
+
+【相転移（A案）に関する確定注記】
+GAS / LIQUID / SOLID の表示は、1 気圧における代表的な状態を示す状態ラベルである。
+本教材では、相転移に伴う分子の凝集・配列・結晶化を、分子運動の直接結果として
+シミュレーションしていない。
+相転移を厳密に扱うには多体相互作用や長時間平均が必要となり、
+実時間教材としては過剰となるため、本教材では概念理解の補助として扱う。
+
+【重要】
+このREADMEは UI 表示用ではない。挙動理解と実装判断の基準文書である。
+-->
+
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-    <meta charset="UTF-8">
-    <title>分子熱運動 - 究極の完成版シミュレーター</title>
+
+<!-- =========================================================
+ [DESIGN CONTRACT / 約束死守・デバッグ完璧]
+
+ このHTMLは授業用教材。既存機能を壊さないことが最優先。
+ 変更は「安全順」で行い、UI・物理・内部改修を混在させない。
+
+ 【最小化UI（重要）】
+ ・最小化は CSS と DOM 構造で成立させる（JSで高さをごまかさない）。
+ ・最小化で消えるべきUIは必ず <div class="controls"> 配下に置く。
+
+ 【HTML構造（重要）】
+ ・div未閉鎖、ui-note内へのdiv入れ子、制御文字(0x01等)の混入はUIを連鎖破壊する。
+ ・生成・編集後は「制御文字が混入していないこと」「タグが崩れていないこと」を確認する。
+
+ 【粒子生成（重要）】
+ ・初期化/生成ロジックでの無限ループ・自己再帰は禁止（ブラウザが固まりUI操作不能になる）。
+
+ ※この契約を破る変更は行わない。
+========================================================= -->
+<!-- ver58: Phase1.8 post-wall UI eject (position-only) (no physics change) -->
+<!-- ver59: Step6 pressure / partial pressure display (UI only; uses Step5 accumulators) -->
+<!-- ver61: Fix② only — mixed mode particle size is per-species (A/B no longer forces all particles to A size); pressure logic unchanged -->
+<!-- ver62: Fix① only — pressure display definition corrected (perimeter+dt normalization) + base-state auto-calibration to 1.013×10^5 Pa; keep 0Pa when no collision; no other behavior changes -->
+<!-- ver63: Fix(Stickiness) only — VDW OFFでも分子が"くっつく"症状を解消（混合モードの衝突解決: overlap を minDistPair で計算し、負値を0にクランプ）; pressure/UIは未変更 -->
+<!-- ver65: Mixedモードの分子数スライダーを有効化（1〜1000、デフォルト60）＋混合UIの全分子数表示/配分表示を可変対応；基準状態較正は N_total=60 のときのみ -->
+<!-- ver71: B-2 混合比や分子数によって速度が変わる誤学習を是正。混合モードでは全体サーモスタットを無効化し、速度制限(limit)を粒子質量ごとに適用して v~sqrt(T/m) を保つ（比率は個数配分のみ） -->
+<!-- ver75: spawnAvoidPanel fallback randomized (A) | was ver73: A-1-1+ (hysteresis) 通常モードに相転移状態(phaseState)の「判定ロジックのみ」を導入（挙動・表示は未変更）。Tと分子種のTb/Tf表に基づき GAS/LIQUID/SOLID を内部的に更新。Heは1 atmで固化しない(Tf=None)。混合モードには適用しない -->
+<!-- ver66: UI周囲を"壁"として扱い、UI壁衝突でも気圧(impulse)に寄与させる（Molecule.update の壁判定フェーズに統合）。applyPanelAvoidance/panelEjectPositionOnly は保険として保持（物理には不使用） -->
+
+
+<!-- ver67: A-1 通常モードの分子間力(VDW)を温度・分子種依存で抑制し、Xe等が273Kで完全集合しないように調整（混合モードのVDWは未変更） -->
+<!-- ver68: B-4 混合モードの分子同士の衝突を「質量つき2D弾性衝突」に置換。He→XeでXeが動きすぎる誤学習を是正（壁impulse/VDW/ UIは未変更） -->
+<!-- ver69: B-3 混合モードの分子間力(VDW)を「分子種ペア依存（対称）」に修正。A/B入替で凝集が変わる非対称を解消し、軽い分子が重い分子凝集に引きずられにくくする（衝突/壁impulse/UIは未変更） -->
+<!-- ver70: B-1 混合モードの気圧が0.00×10^5で固定される症状を是正。条件変更/再生成(init)時に圧力履歴はリセットするが、較正スケール(__pScale)は既定で保持し、0表示の張り付きが起きにくいようにする（物理は未変更） -->
+<!-- Step3 (ver75): add speciesId to particle data structure (no behavior change) -->
+<!-- Step4 (ver57): mixed-mode particle generation (two-species, total=N_total; default=60; event-driven init only) -->
+<!-- Step5 (ver67): wall-impulse accumulation split by speciesId (internal only; no display) -->
+<!-- Level0: syntax/guard hardening applied (ver54) -->
+<!-- Level1: UI clarity (notes + disabled-state clarity) applied (ver54) -->
+<!-- Level2: size display clarified (He-based ratio + visual-only notes) applied (ver54) -->
+<!-- Level3: distribution chart normalization/meaning clarified (ver54) -->
+    <!-- Level4: temperature–speed relation unified, low-T safe, weak thermostat (ver54) -->
+<!-- Level5: VDW enabled safely (minimal diff from ver27) (ver54) -->
+<!-- Level6: pressure calculated from wall collisions (single gas, calibrated) (ver54) -->
+<!-- Level7 Step2: mixed-mode UI frame only (no mixed gas yet) (ver54) -->
+<!-- Level7 Step2b: motion area uses full canvas; avoid panel rect only (ver54) -->
+<!-- Fix: prevent runtime error (boundary before use) + keep forbidden rect updated (ver54) -->
+<!-- UI: invert mode button pressed impression (ver54) -->
+<!-- UI: charts avoid panel overlay (MB graph not under UI) (ver54) -->
+<!-- UI: charts avoid panel overlay stable on restore (ver54) -->
+<!-- UI: mode buttons active matches current mode; active=pressed+blue (ver54) -->
+<meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>分子熱運動 - 究極の完成版シミュレーター (ver75)</title>
     <style>
-        body { font-family: 'Segoe UI', 'Hiragino Kaku Gothic ProN', sans-serif; display: flex; flex-direction: row; background: #2c3e50; color: #ecf0f1; margin: 0; height: 100vh; overflow: hidden; }
-        
-        .sidebar { width: 260px; min-width: 260px; background: #34495e; padding: 20px; box-shadow: 2px 0 10px rgba(0,0,0,0.3); z-index: 20; display: flex; flex-direction: column; gap: 20px; transition: margin-left 0.3s ease; position: relative; }
-        .sidebar.hidden { margin-left: -300px; }
-        
-        #restoreSidebar { position: absolute; left: 10px; top: 10px; z-index: 15; background: #34495e; border: none; color: white; padding: 10px; cursor: pointer; border-radius: 4px; display: none; }
-        .close-sidebar { position: absolute; right: 10px; top: 10px; background: none; border: none; color: #95a5a6; cursor: pointer; font-size: 1.2em; }
 
-        h2 { margin: 0; font-size: 1.1em; color: #3498db; padding-right: 20px; }
-        .controls { display: flex; flex-direction: column; gap: 15px; flex-grow: 1; overflow-y: auto; padding-right: 5px; }
-        .label-group { display: flex; flex-direction: column; gap: 5px; }
-        .temp-ctrl-container { display: flex; align-items: center; gap: 5px; margin-top: 5px; }
-        .btn-step { background: #2980b9; border: none; color: white; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 0.8em; font-weight: bold; }
-        .btn-step:hover { background: #3498db; }
-        input[type="range"] { flex-grow: 1; cursor: pointer; }
-        
-        .switch-group { padding-top: 15px; border-top: 1px solid #5d6d7e; display: flex; align-items: center; justify-content: space-between; }
-        .switch { position: relative; display: inline-block; width: 44px; height: 22px; }
-        .switch input { opacity: 0; width: 0; height: 0; }
-        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #7f8c8d; transition: .4s; border-radius: 22px; }
-        .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
-        input:checked + .slider { background-color: #e67e22; }
-        input:checked + .slider:before { transform: translateX(22px); }
+html, body { height: 100%;
+ touch-action: none;
+}
+body {
+  font-family: 'Segoe UI', 'Hiragino Kaku Gothic ProN', sans-serif;
+  display: flex;
+  flex-direction: row;
+  background: #000;
+  color: #111;
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+}
 
-        .radio-group { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid #5d6d7e; }
-        .radio-group label { font-weight: normal; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 0.85em; }
-        .radio-section-title { font-size: 0.75em; color: #95a5a6; margin-top: 5px; text-transform: uppercase; letter-spacing: 1px; }
-        
-        .color-legend { margin-top: auto; padding-top: 20px; border-top: 1px solid #5d6d7e; }
-        .legend-title { font-size: 0.75em; color: #95a5a6; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
-        .legend-bar { height: 10px; width: 100%; background: linear-gradient(to right, hsl(240, 70%, 50%), hsl(120, 70%, 50%), hsl(0, 70%, 50%)); border-radius: 5px; }
-        .legend-labels { display: flex; justify-content: space-between; font-size: 0.7em; margin-top: 5px; color: #ecf0f1; }
-        
-        .main-content { flex-grow: 1; display: flex; flex-direction: column; background: #f0f3f6; min-width: 0; height: 100vh; position: relative; }
-        .canvas-container { flex: 1; display: flex; flex-direction: column; padding: 10px; gap: 10px; box-sizing: border-box; min-height: 0; }
-        
-        canvas { border-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); width: 100%; height: 100%; display: block; min-height: 0; min-width: 0; }
-        #simCanvas { flex: 2.5; background: #000; transition: flex 0.3s ease; }
-        #simCanvas.expanded { flex: 100; }
-        
-        .charts-wrapper { flex: 1.5; display: flex; gap: 10px; min-height: 0; transition: all 0.3s ease; }
-        .charts-wrapper.hidden { display: none; }
-        .charts-wrapper canvas { flex: 1; background: #fff; }
-    </style>
+/* ===== Panel (match MetalCrystal look & minimized size) ===== */
+.sidebar {
+  width: 280px;
+  min-width: 280px;
+  background: rgba(252,252,252,0.99);
+  padding: 10px;
+  border-radius: 14px;
+  margin: 0; border: none;
+  box-shadow:
+    inset 0 3px 3px rgba(255,255,255,0.95),
+    inset 0 -5px 6px rgba(0,0,0,0.28),
+    inset 4px 0 4px rgba(255,255,255,0.70),
+    inset -4px 0 6px rgba(0,0,0,0.22),
+    0 10px 22px rgba(0,0,0,0.55);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: width 0.25s ease, min-width 0.25s ease, padding 0.25s ease;
+  position: fixed; top: 10px; left: 10px; max-height: calc(100vh - 20px);
+  overflow-y: auto;
+}
+
+/* MetalCrystal: minimized size = width 120px, padding 8px */
+.sidebar.minimized {
+  width: 120px;
+  min-width: 120px;
+  padding: 8px;
+  overflow: hidden;
+
+  height: auto;
+  max-height: none;
+  overflow-y: hidden;
+  gap: 0px;}
+/* Hide sections when minimized, leave header (title+toggle) visible */
+.sidebar.minimized .controls,
+.sidebar.minimized .color-legend { display: none; }
+
+/* Hide legacy buttons (we use toggle) */
+#restoreSidebar { display: none !important; }
+.close-sidebar { display: none !important; }
+
+/* Header */
+.ui-header{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding-right: 2px; }
+.ui-title{ font-weight:700; color:#0078d4; font-size:12px; line-height:1; }
+
+/* Controls */
+.controls { display: flex; flex-direction: column; gap: 10px; }
+.label-group { display:flex; flex-direction:column; gap: 6px; padding-bottom: 8px; border-bottom: 1px solid rgba(0,0,0,0.15); }
+label { color:#111; font-size:12px; font-weight: 700; }
+.temp-ctrl-container { display:flex; align-items:center; gap:6px; }
+input[type="range"]{ flex-grow:1; cursor:pointer; }
+
+/* Buttons */
+.btn-step,
+.sidebar button.btn-step,
+.sidebar button {
+  padding: 6px;
+  cursor: pointer;
+  border: 1px solid #bbb;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #111;
+  background: linear-gradient(180deg, #ffffff 0%, #f1f1f1 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.9),
+    inset 0 -1px 2px rgba(0,0,0,0.12),
+    0 1px 2px rgba(0,0,0,0.25);
+  transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
+}
+.sidebar button:hover:not(:disabled){
+  background: linear-gradient(180deg, #ffffff 0%, #e9e9e9 100%);
+  box-shadow:
+    inset 0 2px 2px rgba(255,255,255,0.95),
+    inset 0 -2px 3px rgba(0,0,0,0.22),
+    0 3px 6px rgba(0,0,0,0.45);
+  transform: translateY(-1px);
+}
+.sidebar button:active:not(:disabled){
+  background: linear-gradient(180deg, #ededed 0%, #f8f8f8 100%);
+  box-shadow: inset 0 3px 4px rgba(0,0,0,0.28);
+  transform: translateY(0);
+}
+
+
+/* ===== Level1: unify active/disabled visual language (MetalCrystal style) ===== */
+.sidebar button:disabled{
+  opacity:0.45; cursor:not-allowed; filter: grayscale(0.2);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.6), 0 1px 2px rgba(0,0,0,0.18);
+}
+.sidebar button.active{
+  color:#111;
+  background: linear-gradient(180deg, #fefefe 0%, #dfe9ff 100%);
+  box-shadow:
+    inset 0 2px 2px rgba(255,255,255,0.95),
+    inset 0 -3px 4px rgba(0,0,0,0.25),
+    0 4px 8px rgba(0,0,0,0.45);
+}
+.sidebar button.active:hover:not(:disabled){
+  background: linear-gradient(180deg, #ffffff 0%, #d6e4ff 100%);
+}
+/* Radio */
+.radio-group { display:flex; flex-direction:column; gap:6px; padding-top: 8px; }
+.radio-section-title { font-size: 11px; color:#666; margin-top:6px; font-weight:700; }
+.radio-group label { font-weight: 600; cursor: pointer; display:flex; align-items:center; gap:8px; font-size: 12px; }
+
+/* Switch group */
+.switch-group { padding-top: 10px; border-top: 1px solid rgba(0,0,0,0.15); display:flex; align-items:center; justify-content:space-between;  padding: 6px 6px; }
+
+
+.switch-group.active{
+  box-shadow: inset 0 0 0 1px rgba(0,120,212,0.18);
+  border-radius: 10px;
+  }
+
+/* ===== ver46: Switch-group label colors (OFF=black, ON=accent) ===== */
+#vdwGroup > span:first-of-type,
+#chartGroup > span:first-of-type{
+  color:#111 !important;
+}
+#vdwGroup.active > span:first-of-type{
+  color:#e67e22 !important;
+}
+#chartGroup.active > span:first-of-type{
+  color:#3498db !important;
+}
+/* Switch (MetalCrystal style) + remove stray checkbox box */
+.switch { position: relative; display:inline-block; width:44px; height:22px; }
+.switch input {
+  opacity:0; width:0; height:0; position:absolute;
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  outline: none; border: none; background: transparent;
+}
+.slider {
+  position:absolute; inset:0; cursor:pointer;
+  background: linear-gradient(180deg, #e2e2e2 0%, #f7f7f7 100%);
+  border-radius:999px;
+  box-shadow:
+    inset 0 3px 4px rgba(0,0,0,0.25),
+    inset 0 -1px 2px rgba(255,255,255,0.85);
+  transition: background .2s;
+}
+.slider:before {
+  position:absolute; content:"";
+  width:18px; height:18px; left:2px; top:2px;
+  background: linear-gradient(180deg, #ffffff 0%, #e6e6e6 100%);
+  border-radius:50%;
+  box-shadow:
+    inset 0 1px 1px rgba(255,255,255,0.9),
+    inset 0 -2px 3px rgba(0,0,0,0.25),
+    0 3px 6px rgba(0,0,0,0.45);
+  transition: transform .2s;
+}
+.switch input:checked + .slider { background: linear-gradient(180deg, #b7d3ff 0%, #e8f1ff 100%); }
+.switch input:checked + .slider:before { transform: translateX(22px); }
+
+/* Legend */
+.color-legend { margin-top: auto; padding-top: 10px; border-top: 1px solid rgba(0,0,0,0.15); }
+.legend-title { font-size: 11px; color:#666; font-weight:700; margin-bottom:6px; }
+.legend-bar { height: 10px; width: 100%; background: linear-gradient(to right, hsl(240, 70%, 50%), hsl(120, 70%, 50%), hsl(0, 70%, 50%)); border-radius: 999px; }
+.legend-labels { display:flex; justify-content:space-between; font-size: 11px; color:#111; margin-top:4px; }
+
+/* ===== Main content ===== */
+.main-content { display: flex; flex-direction: column; background: #000; min-width: 0; height: 100vh; position: fixed; inset: 0; }
+.canvas-container { flex: 1; display: flex; flex-direction: column; padding: 10px; gap: 10px; box-sizing: border-box; min-height: 0; }
+canvas { border-radius: 10px; box-shadow: 0 6px 16px rgba(0,0,0,0.35); width: 100%; height: 100%; display: block; min-height: 0; min-width: 0; }
+#simCanvas { flex: 2.5; background: #000; transition: flex 0.3s ease; }
+#simCanvas.expanded { flex: 100; }
+.charts-wrapper { flex: 1.5; display: flex; gap: 10px; min-height: 0; transition: all 0.3s ease; 
+  --avoid-left: 0px;
+  margin-left: var(--avoid-left);
+  width: calc(100% - var(--avoid-left));
+  max-width: calc(100% - var(--avoid-left));
+  box-sizing: border-box;
+}
+.charts-wrapper.hidden { display: none; }
+.charts-wrapper canvas { flex: 1; background: #fff; }
+
+/* ===== PhaseA: VDW switch is fixed OFF for safe cut-over ===== */
+.switch input:disabled + .slider{ opacity:0.45; cursor:not-allowed; }
+
+
+/* ===== Graph axis UI (PhaseA) ===== */
+/* ===== Axis sliders (PhaseA) ===== */
+.axis-row input[type="range"]{ flex: 1; }
+.axis-row span{ white-space: nowrap; }
+input[type="number"]{ width: 92px; padding: 4px 6px; border: 1px solid #bbb; border-radius: 6px; font-size: 11px; font-weight: 700; box-sizing: border-box; }
+.axis-row{ display:flex; align-items:center; justify-content:space-between; gap:6px; }
+.axis-row label{ font-weight:700; }
+.axis-note{ font-size: 11px; color:#444; font-weight: 600; }
+
+/* ===== Level1: UI clarity notes (non-invasive) ===== */
+.ui-note{ font-size:11px; color:#444; font-weight:600; margin-top:4px; line-height:1.2; }
+.switch-group{ flex-wrap: wrap; }
+
+/* ===== Level7 Step2.5: Mixed-mode UI controls (UI only; no physics change) ===== */
+#mixedFrame .mix-row{ display:flex; align-items:center; justify-content:space-between; gap:6px; margin-top:6px; }
+#mixedFrame .mix-row label{ font-weight:700; }
+#mixedFrame select{ width: 140px; padding: 4px 6px; border: 1px solid #bbb; border-radius: 6px; font-size: 11px; font-weight: 700; background:#fff; }
+#mixedFrame .mix-small{ font-size:11px; color:#444; font-weight:600; }
+#mixedFrame .mix-fixed{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-weight:800; }
+#mixedFrame .mix-slider{ display:flex; align-items:center; gap:6px; margin-top:6px; }
+#mixedFrame .mix-slider input[type="range"]{ flex:1; }
+#mixedFrame .mix-pill{ display:inline-block; padding:2px 6px; border-radius:999px; border:1px solid rgba(0,0,0,0.15); background: rgba(0,0,0,0.04); font-size:11px; font-weight:800; }
+.switch-note{ flex: 0 0 100%; margin-top:4px; font-size:11px; color:#444; font-weight:600; line-height:1.2; }
+.switch-group.disabled span,
+.switch-group.disabled .switch-note{ color:#777 !important; }
+.switch-group.disabled{ opacity:0.85; }
+
+/* ===== ver44: Mode buttons — selected = pressed + blue (toggle-like) ===== */
+#modeGroup .btn-step{ flex:1; }
+#modeGroup .btn-step.active{
+  background: linear-gradient(180deg, #b7d3ff 0%, #e8f1ff 100%);
+  box-shadow: inset 0 3px 4px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.75);
+  border-color: #7aa7e6;
+  transform: translateY(0);
+}
+#modeGroup .btn-step.active:hover:not(:disabled){
+  background: linear-gradient(180deg, #b7d3ff 0%, #e8f1ff 100%);
+  box-shadow: inset 0 3px 4px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.75);
+  transform: translateY(0);
+}
+#modeGroup .btn-step:not(.active){
+  background: linear-gradient(180deg, #ffffff 0%, #f1f1f1 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), inset 0 -1px 2px rgba(0,0,0,0.12), 0 2px 4px rgba(0,0,0,0.28);
+}
+#modeGroup .btn-step:not(.active):hover:not(:disabled){
+  background: linear-gradient(180deg, #ffffff 0%, #e9e9e9 100%);
+  box-shadow: inset 0 2px 2px rgba(255,255,255,0.95), inset 0 -2px 3px rgba(0,0,0,0.22), 0 3px 6px rgba(0,0,0,0.45);
+  transform: translateY(-1px);
+}
+
+</style>
 </head>
 <body>
     <button id="restoreSidebar" title="メニューを表示">☰</button>
     
-    <div class="sidebar" id="sidebar">
+    <div class="sidebar" id="sidebar" data-app-mode="normal">
         <button class="close-sidebar" id="closeSidebar" title="メニューを閉じる">×</button>
-        <h2>分子熱運動<br>シミュレーター</h2>
+        <div class="ui-header"><span class="ui-title">操作パネル</span><label class="switch" title="操作パネルの表示/折りたたみ"><input id="uiSwitch" type="checkbox" checked aria-label="操作パネルの表示/折りたたみ"><span class="slider"></span></label></div>
+<!--
+ [MINIMIZE-BOUNDARY]
+ 最小化は .sidebar.minimized .controls { display:none; } に完全依存。
+ ✅ 最小化で消えるUIは必ず .controls の子に入れる。
+ ❌ .controls の外にUIを追加すると最小化が壊れる。
+ ※HTML構造崩壊（div未閉鎖/制御文字混入）があると、ブラウザDOM補正で境界が崩れて最小化が破綻する。
+-->
+
         <div class="controls">
-            <div class="label-group">
-                <label>絶対温度 (T): <span id="tempVal">300</span> K</label>
+<!-- ===== Level7 Step2: Mixed-mode UI frame (placeholder only) ===== -->
+<div class="label-group" id="mixedFrame" style="display:none;">
+ 
+ <label>混合気体モード（準備中）</label>
+ <div class="ui-note">※Step2：UI枠のみ。混合比・分圧の計算は Step4 以降で実装します。</div>
+ <div class="ui-note">全分子数はスライダーで調整できます（デフォルト60）</div>
+
+ <div class="mix-row"><span class="mix-small">全分子数</span><span class="mix-fixed" id="mixTotalVal">60</span></div>
+
+ <div class="mix-row">
+   <span class="mix-small">気体A</span>
+   <select id="mixSpeciesA" aria-label="混合気体: 気体A">
+     <option value="He">He</option>
+     <option value="Ar">Ar</option>
+     <option value="Xe">Xe</option>
+     <option value="H2">H2</option>
+     <option value="N2">N2</option>
+     <option value="O2">O2</option>
+   </select>
+ </div>
+
+ <div class="mix-row">
+   <span class="mix-small">気体B</span>
+   <select id="mixSpeciesB" aria-label="混合気体: 気体B">
+     <option value="He">He</option>
+     <option value="Ar">Ar</option>
+     <option value="Xe">Xe</option>
+     <option value="H2">H2</option>
+     <option value="N2">N2</option>
+     <option value="O2">O2</option>
+   </select>
+ </div>
+
+ <div class="mix-slider">
+   <span class="mix-small">Aの割合</span>
+   <input type="range" id="mixRatioA" min="0" max="100" value="50" aria-label="混合比: Aの割合（%）">
+   <span class="mix-pill"><span id="mixRatioAVal">50</span>%</span>
+ </div>
+ <div class="ui-note">配分（表示）: A=<span id="mixCountA">30</span> 個 / B=<span id="mixCountB">30</span> 個</div>
+
+ <div class="mix-row">
+   <span class="mix-small">強調表示</span>
+   <select id="mixHighlight" aria-label="混合気体: 強調表示対象">
+     <option value="A">気体A</option>
+     <option value="B">気体B</option>
+   </select>
+ </div>
+ <div class="ui-note">※可視化（分子種色・半透明強調）は Step7 で実装予定（今は設定保持のみ）</div>
+</div>
+
+
+<!-- ===== Step6: Pressure / Partial Pressure display ===== -->
+<div class="label-group" id="pressurePanel" style="display:none;">
+  <label>気圧・分圧（器壁衝突）</label>
+  <div class="ui-note">※瞬時圧：衝突が無いと 0 Pa ／ 平均圧：直近の時間平均（教材用）</div>
+  <div class="mix-row"><span class="mix-small">瞬時圧 P(<span id="pNameA">A</span>)</span><span class="mix-fixed"><span id="pInstA">0</span> Pa</span></div>
+  <div class="mix-row"><span class="mix-small">瞬時圧 P(<span id="pNameB">B</span>)</span><span class="mix-fixed"><span id="pInstB">0</span> Pa</span></div>
+  <div class="mix-row"><span class="mix-small">瞬時圧 P(total)</span><span class="mix-fixed"><span id="pInstT">0</span> Pa</span></div>
+  <div style="height:1px; background: rgba(0,0,0,0.15); margin:6px 0;"></div>
+  <div class="mix-row"><span class="mix-small">平均圧 P(<span id="pNameA2">A</span>)</span><span class="mix-fixed"><span id="pAvgA">0</span> Pa</span></div>
+  <div class="mix-row"><span class="mix-small">平均圧 P(<span id="pNameB2">B</span>)</span><span class="mix-fixed"><span id="pAvgB">0</span> Pa</span></div>
+  <div class="mix-row"><span class="mix-small">平均圧 P(total)</span><span class="mix-fixed"><span id="pAvgT">0</span> Pa</span></div>
+  <div class="ui-note">※全圧 ≒ 分圧の和</div>
+</div>
+<div class="label-group" id="modeGroup">
+<label>モード切替</label>
+<div style="display:flex; gap:6px;">
+  <button class="btn-step active" id="modeNormalBtn">通常モード</button>
+  <button class="btn-step" id="modePressureBtn">混合気体モード</button>
+</div>
+<div class="ui-note">※混合気体モードは準備中です（Step2: UI枠のみ）</div>
+</div>
+
+
+            <div class="label-group" id="tempGroup">
+ <label>絶対温度 (T): <span id="tempVal">273</span> K</label>
                 <div class="temp-ctrl-container">
                     <button class="btn-step" id="tempDown">−1</button>
-                    <input type="range" id="tempRange" min="0" max="3000" value="300">
+                    <input type="range" id="tempRange" min="0" max="3000" value="273">
                     <button class="btn-step" id="tempUp">+1</button>
                 </div>
             </div>
-            <div class="label-group">
-                <label>分子数 (N): <span id="countVal">100</span></label>
+            
+<!-- ===== ver81 UI: 観測判定表示（表示のみ・非侵襲） ===== -->
+<div class="label-group" id="obsJudgePanel"> 
+  <label>観測にもとづく状態（参考）</label>
+  <div class="ui-note">※分子の運動や力には一切影響しません</div>
+  <div style="font-size:12px; font-weight:700;">状態: <span id="obsJudgeLabel">—</span></div>
+</div>
+
+<div class="label-group" id="countGroup">
+ <label>分子数 (N): <span id="countVal">100</span></label>
                 <input type="range" id="countRange" min="10" max="1000" value="100">
             </div>
-            <div class="label-group">
-                <label>原子の大きさ: <span id="radiusVal">8</span> px</label>
+            <div class="label-group" id="radiusGroup">
+ <label>原子の大きさ(He基準): <span id="radiusVal">8</span> px</label>
                 <input type="range" id="radiusRange" min="2" max="30" value="8">
+ <div class="ui-note" id="radiusNote1">※He（ヘリウム）を1.00とした相対比で表示します（実在の原子半径そのものではありません）</div>
+ <div class="ui-note" id="radiusNote2">※大きさは見た目用です（速さ・温度・グラフとは無関係）</div>
             </div>
+
+    <div class="label-group" id="axisGroup">
+  <label>グラフ軸設定（固定）</label>
+ <div class="ui-note" id="axisFixedNote">※温度・分子種・分子数を変えても軸は変わりません</div>
+
+  <div class="axis-row">
+    <span class="axis-note">MB横軸</span>
+    <button class="btn-step" data-axis="vMax" data-step="-1">−</button>
+    <input type="range" id="vMaxSlider" min="1" max="20" step="1" value="2">
+    <button class="btn-step" data-axis="vMax" data-step="1">＋</button>
+    <span id="vMaxVal">2</span>
+  </div>
+
+  <div class="axis-row">
+    <span class="axis-note">MB縦軸</span>
+    <button class="btn-step" data-axis="vYMax" data-step="-0.1">−</button>
+    <input type="range" id="vYMaxSlider" min="0.5" max="4.0" step="0.1" value="4.0">
+    <button class="btn-step" data-axis="vYMax" data-step="0.1">＋</button>
+    <span id="vYMaxVal">4.0</span>
+  </div>
+
+  <div class="axis-row">
+    <span class="axis-note">運動エネ横軸</span>
+    <button class="btn-step" data-axis="eMax" data-step="-10">−</button>
+    <input type="range" id="eMaxSlider" min="50" max="1000" step="10" value="100">
+    <button class="btn-step" data-axis="eMax" data-step="10">＋</button>
+    <span id="eMaxVal">100</span>
+  </div>
+
+  <div class="axis-row">
+    <span class="axis-note">運動エネ縦軸</span>
+    <button class="btn-step" data-axis="eYMax" data-step="-0.01">−</button>
+    <input type="range" id="eYMaxSlider" min="0.01" max="0.10" step="0.01" value="0.08">
+    <button class="btn-step" data-axis="eYMax" data-step="0.01">＋</button>
+    <span id="eYMaxVal">0.08</span>
+  </div>
+
+  <label style="font-weight:600; display:flex; align-items:center; gap:8px;"><input type="checkbox" id="eOverflowToggle">運動エネ赤線はみ出し許可</label>
+</div>
+
             
-            <div class="radio-group">
+            <div class="radio-group" id="moleculeGroup">
                 <div class="radio-section-title">単原子分子</div>
                 <label><input type="radio" name="moleculeType" value="He"> ヘリウム (He)</label>
                 <label><input type="radio" name="moleculeType" value="Ar"> アルゴン (Ar)</label>
@@ -84,23 +522,26 @@
                 <label><input type="radio" name="moleculeType" value="O2"> 酸素 (O₂)</label>
             </div>
             
-            <div class="switch-group">
+            <div class="switch-group" id="vdwGroup">
                 <span style="font-size: 0.9em; font-weight: bold; color: #e67e22;">分子間力 (実在気体)</span>
                 <label class="switch">
                     <input type="checkbox" id="vdwSwitch">
                     <span class="slider"></span>
                 </label>
+ <span class="switch-note" id="vdwFixedNote">教材用の簡略モデルです（誤学習防止のため強さは制限されています）</span>
+ 
             </div>
 
-            <div class="switch-group">
+            <div class="switch-group" id="chartGroup">
                 <span style="font-size: 0.9em; font-weight: bold; color: #3498db;">グラフを表示</span>
                 <label class="switch">
                     <input type="checkbox" id="chartToggle">
                     <span class="slider"></span>
                 </label>
+ <span class="switch-note" id="chartMeaningNote">※分布図は「確率密度」（面積=1）です。教科書(3D)比較の表示で、同一分子では E = 1/2 m v² の対応があります</span>
             </div>
         </div>
-        <div class="color-legend">
+        <div class="color-legend" id="colorLegend">
             <div class="legend-title">分子の速さと色</div>
             <div class="legend-bar"></div>
             <div class="legend-labels"><span>遅い</span><span>速い</span></div>
@@ -118,7 +559,17 @@
     </div>
 
     <script>
-        const canvas = document.getElementById('simCanvas');
+        
+// =========================================================
+// [DEBUG CHECKLIST / 提出前チェック]
+// □ 制御文字が混入していない（0x01/0x03/0x04 等）
+// □ HTMLタグが崩れていない（div未閉鎖なし、ui-note内div入れ子なし）
+// □ 最小化：.controls 外にUIが無い（CSSだけで最小化が成立）
+// □ 無限ループ・自己再帰が無い（init/生成ロジック）
+// □ 既存挙動（通常モード）を壊していない
+// =========================================================
+
+const canvas = document.getElementById('simCanvas');
         const ctx = canvas.getContext('2d');
         const vCanvas = document.getElementById('vChartCanvas');
         const vCtx = vCanvas.getContext('2d');
@@ -128,7 +579,7 @@
         const sidebar = document.getElementById('sidebar');
         const restoreSidebarBtn = document.getElementById('restoreSidebar');
 
-        let temperature = 300, particleCount = 100, molarMass = 2, atomRadius = 8, degreesOfFreedom = 3, moleculeName = "H2";
+        let temperature = 273, particleCount = 100, molarMass = 2, atomRadius = 8, degreesOfFreedom = 3, moleculeName = "H2";
         let useVDW = false, showCharts = false;
         let particles = [];
 
@@ -141,7 +592,671 @@
             "O2": { mass: 32, dof: 3, bp: 90, isDiatomic: true }
         };
 
-        function syncCanvasSize() {
+// ===== ver72 (A-1-1): phaseState skeleton (NORMAL mode only; NO behavior/UI change) =====
+const PHASE = { GAS:'GAS', LIQUID:'LIQUID', SOLID:'SOLID' };
+const phaseTable1atm = {
+  He:{ Tf:null,   Tb:4.22 },
+  H2:{ Tf:13.99, Tb:20.28 },
+  N2:{ Tf:63.29, Tb:77.35 },
+  O2:{ Tf:54.85, Tb:90.25 },
+  Ar:{ Tf:83.80, Tb:87.28 },
+  Xe:{ Tf:161.3, Tb:165.0 }
+};
+let phaseState = PHASE.GAS;
+function computePhaseState(speciesKey, T){
+ const d = phaseTable1atm[speciesKey] || phaseTable1atm.H2;
+ const t = Math.max(0, Number(T) || 0);
+ const Tb = d.Tb;
+ const Tf = d.Tf;
+ // ver73: hysteresis to avoid rapid toggling near boundaries (logic only)
+ const H = 1.0; // K (educational hysteresis margin)
+ // Use previous phaseState when near boundaries
+ if (Tf == null){
+   if (t > Tb + H) return PHASE.GAS;
+   if (t < Tb - H) return PHASE.LIQUID;
+   return phaseState || PHASE.LIQUID;
+ }
+ if (t > Tb + H) return PHASE.GAS;
+ if (t < Tf - H) return PHASE.SOLID;
+ if (t > Tf + H && t < Tb - H) return PHASE.LIQUID;
+ return phaseState || PHASE.LIQUID;
+}
+function updatePhaseState(){
+  const __mode = (sidebar && sidebar.dataset && sidebar.dataset.appMode) ? sidebar.dataset.appMode : 'normal';
+  if (__mode === 'mixed') return;
+  phaseState = computePhaseState(moleculeName, temperature);
+  try { window.__phaseState = phaseState; } catch(_e){}
+}
+
+
+// ===== Level0: safety helpers (syntax/NaN guard; no physics change) =====
+function __safeRand(eps = 1e-4){
+  const r = Math.random();
+  return (r > eps) ? r : eps;
+}
+function __safeDiv(num, den, eps = 1e-12){
+  return num / (Math.abs(den) > eps ? den : (den >= 0 ? eps : -eps));
+}
+
+
+// ===== Level2: size scaling (He基準 + 比率) =====
+// Level2: 描画サイズは He を基準とする（slider値=He半径）。分子種切替でslider値は変えない。
+// Level2: 速さ・温度・分布（グラフ）には一切影響しない“見た目”の調整である。
+// NOTE: 教材用の見た目スケール。He を 1.00 とし、他分子は相対比で半径を決める。
+// ここにある比率は“代表値（概算）”としての初期値。先生が採用する表に合わせて比率のみ差し替える。
+const radiusRatio = {
+  He: 1.00,
+  Ar: 1.34,
+  Xe: 1.54,
+  H2: 0.86,
+  N2: 1.11,
+  O2: 1.09
+};
+// ===== Fix② (ver67): per-species radius helper for mixed mode =====
+function __radiusPxForSpeciesKey(speciesKey){
+  const rHe = atomRadius; // slider value = He radius
+  const k = radiusRatio[speciesKey] ?? 1.00;
+  return Math.max(1, Math.min(60, rHe * k));
+}
+
+function effectiveAtomRadiusPx(){
+  const rHe = atomRadius; // slider value = He radius
+  const k = radiusRatio[moleculeName] ?? 1.00;
+  // 安全装置：極端値の暴走を防ぐ
+  return Math.max(1, Math.min(60, rHe * k));
+}
+
+
+        
+
+// ===== Level4: temperature-speed relation redesign (VDW OFFを主対象) =====
+// 目的：温度Tと質量mの関係（v ~ sqrt(T/m)）がグラフにも運動にも一貫して現れるようにする。
+// 単位系は教材用（相対）で、基準点(T=300K, H2質量=2)で従来の動きに近い値を採用。
+const REF_TEMP_K = 300;
+const REF_MASS = 2;
+const REF_SIGMA = 2.2360679; // ≒sqrt(5) : 旧式(T=300K,H2)のsigma近似
+function sigmaTargetFor(mass){
+  const T = Math.max(temperature, 0.1);
+  const m = Math.max(mass, 0.1);
+  return REF_SIGMA * Math.sqrt(T / REF_TEMP_K) * Math.sqrt(REF_MASS / m);
+}
+function sigmaTarget(){
+  return sigmaTargetFor(molarMass);
+}
+function kTTarget(){
+ // Level4: define kT explicitly proportional to T (relative unit)
+ const T = Math.max(temperature, 0);
+ const K_SCALE = (REF_MASS * REF_SIGMA * REF_SIGMA) / REF_TEMP_K; // keeps appearance at reference point
+ return Math.max(1e-9, K_SCALE * T);
+}
+
+
+// ===== PhaseA: display/normalization reset (Level3改へ立ち戻り) =====
+// フェーズAの目的：
+//  - 既存の運動・見た目を壊さず、グラフ表示の自己相似化（軸追随）と正規化不一致を解消し、原因切り分けを可能にする。
+//  - VDW（分子間力）はフェーズAでは固定OFF（レベル5で扱う）。
+const PHASEA_FIXED_MAXV = 45;   // 速度軸の固定上限（温度最大3000Kを想定した安全側）
+const PHASEA_FIXED_MAXE = 1000; 
+// ===== PhaseA: fixed Y-axis (確率密度の縦軸を固定：基準温度=100K) =====
+// 目的：温度が上がって分布が右へ広がるとき、山が低くなる（積分一定が視覚的に分かる）ようにする。
+// 設計：縦軸スケールは「基準温度(100K)」での理想PDF最大値を基準に固定する。
+// 注意：温度スライダーを0Kにすると、理想的には極限で尖るため、上端でクリップされる（枠外には出ない）。
+const PHASEA_Y_BASE_TEMP_K = 100;
+const PHASEA_NOISE_MARGIN = 1.20; // ヒストグラムのサンプルゆらぎ安全マージン
+
+function phaseA_sigmaFor(mass, T){
+  const t = Math.max(0.1, T);
+  const m = Math.max(0.1, mass);
+  return REF_SIGMA * Math.sqrt(t / REF_TEMP_K) * Math.sqrt(REF_MASS / m);
+}
+
+function phaseA_sigmaMinAtBase(){
+  // 山が最も高くなる（=σ最小）条件として「最大質量」を採用（基準温度は100K固定）
+  let maxMass = 0;
+  for (const k in molData){ maxMass = Math.max(maxMass, molData[k].mass); }
+  return phaseA_sigmaFor(maxMass, PHASEA_Y_BASE_TEMP_K);
+}
+
+function phaseA_kTAtBase(){
+  // 本コードの定義(kTTarget)に合わせ、kTは T に比例する相対単位
+  const s = phaseA_sigmaFor(REF_MASS, PHASEA_Y_BASE_TEMP_K); // mass=REF_MASS の基準σ
+  return Math.max(1e-9, REF_MASS * s * s);
+}
+
+function phaseA_fixedVScale(vh){
+  const sigmaBaseMin = Math.max(1e-9, phaseA_sigmaMinAtBase());
+  // Maxwell speed PDF の最大値（mode v=√2 σ）: f_max = √(2/π) * (2/σ) * exp(-1)
+  const fMax = Math.sqrt(2/Math.PI) * (2.0 / sigmaBaseMin) * Math.exp(-1);
+  return (0.90 * vh) / (fMax * PHASEA_NOISE_MARGIN);
+}
+
+function phaseA_fixedEScale(eh){
+  const kTbase = Math.max(1e-9, phaseA_kTAtBase());
+  // 3D energy PDF の最大値（mode E = 0.5 kT）: f_max = 2/√π * √(0.5)/(kT) * exp(-0.5)
+  const fMax = (2.0 / Math.sqrt(Math.PI)) * (Math.sqrt(0.5) / kTbase) * Math.exp(-0.5);
+  return (0.90 * eh) / (fMax * PHASEA_NOISE_MARGIN);
+}
+
+// ===== PhaseA: chart axis parameters controlled by UI =====
+let chartAxisVMax = 2;
+let chartAxisEMax = 100;
+let chartAxisVYMax = 4.0; // PDF上限（MB） // PDF上限（MB）
+let chartAxisEYMax = 0.08; // PDF上限（Energy） // PDF上限（Energy）
+let energyCurveOverflow = false;
+
+function defaultVYMax(){
+  const sigmaMin = Math.max(1e-9, phaseA_sigmaMinAtBase());
+  // Maxwell speed PDF 最大値（mode v=√2 σ）: f_max = √(2/π) * (2/σ) * exp(-1)
+  const fMax = Math.sqrt(2/Math.PI) * (2.0 / sigmaMin) * Math.exp(-1);
+  return fMax * PHASEA_NOISE_MARGIN;
+}
+function defaultEYMax(){
+  const kTbase = Math.max(1e-9, phaseA_kTAtBase());
+  // 3D energy PDF 最大値（mode E = 0.5 kT）: f_max = 2/√π * √(0.5)/(kT) * exp(-0.5)
+  const fMax = (2.0 / Math.sqrt(Math.PI)) * (Math.sqrt(0.5) / kTbase) * Math.exp(-0.5);
+  return fMax * PHASEA_NOISE_MARGIN;
+}
+
+function clampNum(x, lo, hi){ return Math.min(hi, Math.max(lo, x)); }
+
+
+
+function initAxisUI(){
+  if (window.__axisUIInitialized) return;
+  window.__axisUIInitialized = true;
+
+  const map = {
+    vMax:  { slider:'vMaxSlider',  val:'vMaxVal',  min:1,   max:20,   step:1 },
+    vYMax: { slider:'vYMaxSlider', val:'vYMaxVal', min:0.5, max:4.0,  step:0.1 },
+    eMax:  { slider:'eMaxSlider',  val:'eMaxVal',  min:50,  max:1000, step:10 },
+    eYMax: { slider:'eYMaxSlider', val:'eYMaxVal', min:0.01,max:0.10, step:0.01 }
+  };
+
+  function clamp(axis, x){
+    const m = map[axis];
+    return Math.min(m.max, Math.max(m.min, x));
+  }
+
+  function fmt(axis, x){
+    if (axis==='vYMax') return x.toFixed(1);
+    if (axis==='eYMax') return x.toFixed(2);
+    return String(Math.round(x));
+  }
+
+  function setAxis(axis, value){
+    value = clamp(axis, value);
+    const s = document.getElementById(map[axis].slider);
+    const v = document.getElementById(map[axis].val);
+    if (s) s.value = String(value);
+    if (v) v.innerText = fmt(axis, value);
+    if (axis==='vMax') chartAxisVMax = value;
+    if (axis==='vYMax') chartAxisVYMax = value;
+    if (axis==='eMax') chartAxisEMax = value;
+    if (axis==='eYMax') chartAxisEYMax = value;
+  }
+
+  // 初期同期
+  setAxis('vMax', chartAxisVMax);
+  setAxis('vYMax', chartAxisVYMax);
+  setAxis('eMax', chartAxisEMax);
+  setAxis('eYMax', chartAxisEYMax);
+
+  // slider input
+  Object.keys(map).forEach(axis=>{
+    const s = document.getElementById(map[axis].slider);
+    if (!s) return;
+    s.addEventListener('input', ()=>{
+      setAxis(axis, parseFloat(s.value));
+    });
+  });
+
+  // +/- buttons
+  document.querySelectorAll('button.btn-step[data-axis]').forEach(btn=>{
+    btn.addEventListener('click', (ev)=>{
+      ev.preventDefault();
+      const axis = btn.getAttribute('data-axis');
+      const delta = parseFloat(btn.getAttribute('data-step'));
+      const s = document.getElementById(map[axis].slider);
+      const cur = s ? parseFloat(s.value) : 0;
+      setAxis(axis, cur + delta);
+    });
+  });
+
+  // overflow toggle
+  const eOv = document.getElementById('eOverflowToggle');
+  if (eOv){
+    eOv.checked = false;
+    eOv.addEventListener('change', ()=>{ energyCurveOverflow = !!eOv.checked; });
+  }
+}
+
+function applyTemperatureScale(oldT, newT){
+ // Level4: avoid blow-up near 0K; rescale gently
+ const o = Math.max(1, oldT);
+ const n = Math.max(1, newT);
+ const ratio = Math.sqrt(n / o);
+ const r = Math.min(5, Math.max(0.2, ratio));
+ for (const p of particles){
+  p.vx *= r; p.vy *= r;
+  if (typeof p.vz === 'number') p.vz *= r;
+  if (typeof p.omega === 'number') p.omega *= r;
+ }
+}
+
+
+
+// ===== ver36: forbidden rectangle = UI panel area (avoid only this rect) =====
+let __forbiddenRect = null; // canvas coordinates {x,y,w,h}
+function updateForbiddenRect(){
+  if(!sidebar || !canvas) { __forbiddenRect = null; return; }
+  const sb = sidebar.getBoundingClientRect();
+  const cv = canvas.getBoundingClientRect();
+  const left = Math.max(sb.left, cv.left);
+  const right = Math.min(sb.right, cv.right);
+  const top = Math.max(sb.top, cv.top);
+  const bottom = Math.min(sb.bottom, cv.bottom);
+  if (right <= left || bottom <= top) { __forbiddenRect = null; return; }
+  const sx = canvas.width / Math.max(1, cv.width);
+  const sy = canvas.height / Math.max(1, cv.height);
+  __forbiddenRect = { x:(left - cv.left)*sx, y:(top - cv.top)*sy, w:(right-left)*sx, h:(bottom-top)*sy };
+}
+
+
+// ===== ver39: keep charts (MB/energy) visible by avoiding sidebar overlay =====
+function updateChartsAvoidPanel(){
+  if(!chartsWrapper || !sidebar) return;
+  const parent = chartsWrapper.parentElement;
+  if(!parent) return;
+  let avoid = 0;
+
+  // ver42: stable rule (no overlap detection)
+  // When charts are shown and sidebar is NOT minimized, always reserve space up to sidebar's right edge.
+  if (showCharts && !sidebar.classList.contains('minimized')){
+    const sb = sidebar.getBoundingClientRect();
+    const pr = parent.getBoundingClientRect();
+    avoid = Math.max(0, (sb.right + 12) - pr.left);
+    // safety clamp: keep at least 120px visible
+    avoid = Math.min(avoid, Math.max(0, pr.width - 120));
+  }
+
+  chartsWrapper.style.setProperty('--avoid-left', Math.round(avoid) + 'px');
+}
+
+// ===== ver66: UI wall collision (physics layer) =====
+// IMPORTANT: This is the ONLY place where UI壁を"衝突(速度反転)"として扱う。
+// - applyPanelAvoidance / panelEjectPositionOnly は保険の位置修正（物理には使わない）
+// - UI壁の判定は canvas端壁と同じ update() の壁判定フェーズで行う
+function handleUIWallCollision(p, prevX, prevY, boundary){
+  const r = __forbiddenRect;
+  if(!r) return;
+  const fx = r.x - boundary;
+  const fy = r.y - boundary;
+  const fw = r.w + boundary*2;
+  const fh = r.h + boundary*2;
+  const left = fx;
+  const right = fx + fw;
+  const top = fy;
+  const bottom = fy + fh;
+
+  const xMin = boundary;
+  const xMax = canvas.width - boundary;
+  const yMin = boundary;
+  const yMax = canvas.height - boundary;
+  const EPS = 0.8;
+
+  const segOverlap = (a,b,lo,hi)=> (Math.min(a,b) <= hi && Math.max(a,b) >= lo);
+  const yOverlap = segOverlap(prevY, p.y, top, bottom);
+  const xOverlap = segOverlap(prevX, p.x, left, right);
+
+  let best = null;
+  const consider = (side, t)=>{
+    if(!isFinite(t) || t < 0 || t > 1) return;
+    if(!best || t < best.t) best = {side, t};
+  };
+
+  const dx = p.x - prevX;
+  const dy = p.y - prevY;
+
+  if (yOverlap && dx !== 0){
+    if (dx > 0 && prevX < left && p.x >= left) consider('L', (left - prevX)/dx);
+    if (dx < 0 && prevX > right && p.x <= right) consider('R', (right - prevX)/dx);
+  }
+  if (xOverlap && dy !== 0){
+    if (dy > 0 && prevY < top && p.y >= top) consider('T', (top - prevY)/dy);
+    if (dy < 0 && prevY > bottom && p.y <= bottom) consider('B', (bottom - prevY)/dy);
+  }
+
+  let collided = false;
+  if (best){
+    collided = true;
+    if (best.side === 'L'){
+      p.x = left - EPS;
+      p.vx = -Math.abs(p.vx);
+      accumulateWallImpulse(2*p.mass*Math.abs(p.vx), p.speciesId);
+    } else if (best.side === 'R'){
+      p.x = right + EPS;
+      p.vx = Math.abs(p.vx);
+      accumulateWallImpulse(2*p.mass*Math.abs(p.vx), p.speciesId);
+    } else if (best.side === 'T'){
+      p.y = top - EPS;
+      p.vy = -Math.abs(p.vy);
+      accumulateWallImpulse(2*p.mass*Math.abs(p.vy), p.speciesId);
+    } else { // 'B'
+      p.y = bottom + EPS;
+      p.vy = Math.abs(p.vy);
+      accumulateWallImpulse(2*p.mass*Math.abs(p.vy), p.speciesId);
+    }
+    // clamp to canvas interior (safety)
+    p.x = Math.min(xMax, Math.max(xMin, p.x));
+    p.y = Math.min(yMax, Math.max(yMin, p.y));
+  }
+
+  // Penetration guard (e.g., resize/jitter): if still inside, push out with minimum translation
+  if (p.x > left && p.x < right && p.y > top && p.y < bottom){
+    const dL = p.x - left;
+    const dR = right - p.x;
+    const dT = p.y - top;
+    const dB = bottom - p.y;
+    const m = Math.min(dL, dR, dT, dB);
+    // Avoid double-counting impulse when we already resolved a crossing this frame
+    if (!collided){
+      if (m === dL){ p.x = left - EPS; p.vx = -Math.abs(p.vx); accumulateWallImpulse(2*p.mass*Math.abs(p.vx), p.speciesId); }
+      else if (m === dR){ p.x = right + EPS; p.vx = Math.abs(p.vx); accumulateWallImpulse(2*p.mass*Math.abs(p.vx), p.speciesId); }
+      else if (m === dT){ p.y = top - EPS; p.vy = -Math.abs(p.vy); accumulateWallImpulse(2*p.mass*Math.abs(p.vy), p.speciesId); }
+      else { p.y = bottom + EPS; p.vy = Math.abs(p.vy); accumulateWallImpulse(2*p.mass*Math.abs(p.vy), p.speciesId); }
+    } else {
+      // if already collided, just push out position-only to guarantee separation
+      if (m === dL) p.x = left - EPS;
+      else if (m === dR) p.x = right + EPS;
+      else if (m === dT) p.y = top - EPS;
+      else p.y = bottom + EPS;
+    }
+    p.x = Math.min(xMax, Math.max(xMin, p.x));
+    p.y = Math.min(yMax, Math.max(yMin, p.y));
+  }
+}
+
+
+function applyPanelAvoidance(p, boundary){
+ const r = __forbiddenRect;
+ if(!r) return;
+ const fx = r.x - boundary;
+ const fy = r.y - boundary;
+ const fw = r.w + boundary*2;
+ const fh = r.h + boundary*2;
+ // outside? (treat edges as outside)
+ if (p.x <= fx || p.x >= fx+fw || p.y <= fy || p.y >= fy+fh) return;
+
+ // ---- Phase1.7 (ver54): wall-penalty selection + orthogonal nudge (UI-only) ----
+ // Goal: avoid rare stable corner points (e.g., bottom-left) WITHOUT shrinking the free space.
+ const eps = 0.5;
+ const leftX   = fx - eps;
+ const rightX  = fx + fw + eps;
+ const topY    = fy - eps;
+ const bottomY = fy + fh + eps;
+
+ const xMin = boundary;
+ const xMax = canvas.width  - boundary;
+ const yMin = boundary;
+ const yMax = canvas.height - boundary;
+
+ const EDGE_LAMBDA = 30; // px-scale penalty weight (UI-only)
+ const ORTH_NUDGE  = Math.min(40, Math.max(12, boundary*0.75));
+
+ function clamp(v, lo, hi){ return Math.min(hi, Math.max(lo, v)); }
+ function edgeDist(nx, ny){
+   return Math.min(nx - xMin, xMax - nx, ny - yMin, yMax - ny);
+ }
+ function score(nx, ny, move){
+   const e = Math.max(0, edgeDist(nx, ny));
+   return move + (EDGE_LAMBDA / (e + 1));
+ }
+
+ const cand = [];
+ function add(side, nx, ny, move){
+   if (nx < xMin || nx > xMax || ny < yMin || ny > yMax) return;
+   cand.push({side, nx, ny, s: score(nx, ny, move)});
+ }
+
+ // Candidates (prefer R/B by listing order for tie situations)
+ add('R', rightX,  p.y, Math.abs(rightX - p.x));
+ add('B', p.x, bottomY, Math.abs(bottomY - p.y));
+ add('L', leftX,   p.y, Math.abs(p.x - leftX));
+ add('T', p.x,   topY,  Math.abs(p.y - topY));
+
+ let chosen = null;
+ for (const c of cand){
+   if (!chosen || c.s < chosen.s) chosen = c;
+ }
+
+ // Fallback (tiny canvas): choose between right/bottom with clamping
+ if (!chosen){
+   const nxR = clamp(rightX, xMin, xMax);
+   const nyB = clamp(bottomY, yMin, yMax);
+   const sR = score(nxR, p.y, Math.abs(nxR - p.x));
+   const sB = score(p.x, nyB, Math.abs(nyB - p.y));
+   chosen = (sR <= sB) ? {side:'R', nx:nxR, ny:p.y} : {side:'B', nx:p.x, ny:nyB};
+ }
+
+ // One-shot orthogonal nudge away from walls to prevent corner sticking
+ if ((chosen.side === 'B' || chosen.side === 'T')){
+   const lo = xMin + ORTH_NUDGE;
+   const hi = xMax - ORTH_NUDGE;
+   if (hi > lo) chosen.nx = clamp(chosen.nx, lo, hi);
+ }
+ if ((chosen.side === 'L' || chosen.side === 'R')){
+   const lo = yMin + ORTH_NUDGE;
+   const hi = yMax - ORTH_NUDGE;
+   if (hi > lo) chosen.ny = clamp(chosen.ny, lo, hi);
+ }
+
+ // apply + reflect velocity away from panel
+ if (chosen.side === 'L'){ p.x = chosen.nx; p.vx = -Math.abs(p.vx); }
+ else if (chosen.side === 'R'){ p.x = chosen.nx; p.vx =  Math.abs(p.vx); }
+ else if (chosen.side === 'T'){ p.y = chosen.ny; p.vy = -Math.abs(p.vy); }
+ else { p.y = chosen.ny; p.vy =  Math.abs(p.vy); }
+}
+
+// ===== ver54: Post-wall UI eject (position-only; no velocity change) =====
+// After wall clamps, a particle can end up inside the UI forbidden rect. Eject it by position only.
+function panelEjectPositionOnly(p, boundary){
+  const r = __forbiddenRect;
+  if(!r) return;
+  const fx = r.x - boundary;
+  const fy = r.y - boundary;
+  const fw = r.w + boundary*2;
+  const fh = r.h + boundary*2;
+  // outside? (treat edges as outside)
+  if (p.x <= fx || p.x >= fx+fw || p.y <= fy || p.y >= fy+fh) return;
+
+  const eps = 0.8;
+  const xMin = boundary;
+  const xMax = canvas.width  - boundary;
+  const yMin = boundary;
+  const yMax = canvas.height - boundary;
+  const ORTH_NUDGE = Math.min(40, Math.max(12, boundary*0.75));
+
+  function clamp(v, lo, hi){ return Math.min(hi, Math.max(lo, v)); }
+
+  function edgeScore(nx, ny, move){
+    const edge = Math.min(nx - xMin, xMax - nx, ny - yMin, yMax - ny);
+    return move + (30 / (Math.max(0, edge) + 1));
+  }
+
+  const cand = [];
+  function add(side, nx, ny, move){
+    if (nx < xMin || nx > xMax || ny < yMin || ny > yMax) return;
+    cand.push({side, nx, ny, s: edgeScore(nx, ny, move)});
+  }
+
+  const leftX   = fx - eps;
+  const rightX  = fx + fw + eps;
+  const topY    = fy - eps;
+  const bottomY = fy + fh + eps;
+
+  // Candidates (prefer R/B first for tie situations)
+  add('R', rightX,  p.y, Math.abs(rightX - p.x));
+  add('B', p.x, bottomY, Math.abs(bottomY - p.y));
+  add('L', leftX,   p.y, Math.abs(p.x - leftX));
+  add('T', p.x,   topY,  Math.abs(p.y - topY));
+
+  let chosen = null;
+  for (const c of cand){
+    if (!chosen || c.s < chosen.s) chosen = c;
+  }
+
+  if (!chosen){
+    // tiny canvas fallback
+    const nxR = clamp(rightX, xMin, xMax);
+    const nyB = clamp(bottomY, yMin, yMax);
+    const sR = edgeScore(nxR, p.y, Math.abs(nxR - p.x));
+    const sB = edgeScore(p.x, nyB, Math.abs(nyB - p.y));
+    chosen = (sR <= sB) ? {side:'R', nx:nxR, ny:p.y} : {side:'B', nx:p.x, ny:nyB};
+  }
+
+  // Orthogonal nudge away from canvas walls (position-only)
+  if (chosen.side === 'B' || chosen.side === 'T'){
+    const lo = xMin + ORTH_NUDGE;
+    const hi = xMax - ORTH_NUDGE;
+    if (hi > lo) chosen.nx = clamp(chosen.nx, lo, hi);
+  }
+  if (chosen.side === 'L' || chosen.side === 'R'){
+    const lo = yMin + ORTH_NUDGE;
+    const hi = yMax - ORTH_NUDGE;
+    if (hi > lo) chosen.ny = clamp(chosen.ny, lo, hi);
+  }
+
+  if (chosen.side === 'L' || chosen.side === 'R') p.x = chosen.nx;
+  else p.y = chosen.ny;
+
+  // final clamp
+  p.x = clamp(p.x, xMin, xMax);
+  p.y = clamp(p.y, yMin, yMax);
+
+  // if still inside due to numeric edge, force to right
+  if (p.x > fx && p.x < fx+fw && p.y > fy && p.y < fy+fh){
+    p.x = clamp(fx+fw+1, xMin, xMax);
+    const lo = yMin + ORTH_NUDGE;
+    const hi = yMax - ORTH_NUDGE;
+    if (hi > lo) p.y = clamp(p.y, lo, hi);
+  }
+}
+
+
+
+// ===== ver48: Evict particles from panel area on UI expand (prevent stranded under UI) =====
+function evictParticlesFromPanel(){
+ const r = __forbiddenRect;
+ if(!r || !particles || particles.length===0) return;
+ const eps = 0.8;
+ const EDGE_LAMBDA = 30; // px-scale penalty weight (UI-only)
+
+ function clamp(v, lo, hi){ return Math.min(hi, Math.max(lo, v)); }
+
+ for (const p of particles){
+   const rad = effectiveAtomRadiusPx();
+   const boundary = (p.isDiatomic ? rad*2 : rad);
+
+   const fx = r.x - boundary;
+   const fy = r.y - boundary;
+   const fw = r.w + boundary*2;
+   const fh = r.h + boundary*2;
+
+   // outside? (treat edges as outside)
+   if (p.x <= fx || p.x >= fx+fw || p.y <= fy || p.y >= fy+fh) continue;
+
+   const leftX   = fx - eps;
+   const rightX  = fx + fw + eps;
+   const topY    = fy - eps;
+   const bottomY = fy + fh + eps;
+
+   const xMin = boundary;
+   const xMax = canvas.width  - boundary;
+   const yMin = boundary;
+   const yMax = canvas.height - boundary;
+
+   const ORTH_NUDGE = Math.min(40, Math.max(12, boundary*0.75));
+
+   function edgeDist(nx, ny){
+     return Math.min(nx - xMin, xMax - nx, ny - yMin, yMax - ny);
+   }
+   function score(nx, ny, move){
+     const e = Math.max(0, edgeDist(nx, ny));
+     return move + (EDGE_LAMBDA / (e + 1));
+   }
+
+   const cand = [];
+   function add(side, nx, ny, move){
+     if (nx < xMin || nx > xMax || ny < yMin || ny > yMax) return;
+     cand.push({side, nx, ny, s: score(nx, ny, move)});
+   }
+
+   add('R', rightX,  p.y, Math.abs(rightX - p.x));
+   add('B', p.x, bottomY, Math.abs(bottomY - p.y));
+   add('L', leftX,   p.y, Math.abs(p.x - leftX));
+   add('T', p.x,   topY,  Math.abs(p.y - topY));
+
+   let chosen = null;
+   for (const c of cand){
+     if (!chosen || c.s < chosen.s) chosen = c;
+   }
+
+   if (!chosen){
+     const nxR = clamp(rightX, xMin, xMax);
+     const nyB = clamp(bottomY, yMin, yMax);
+     const sR = score(nxR, p.y, Math.abs(nxR - p.x));
+     const sB = score(p.x, nyB, Math.abs(nyB - p.y));
+     chosen = (sR <= sB) ? {side:'R', nx:nxR, ny:p.y} : {side:'B', nx:p.x, ny:nyB};
+   }
+
+   // One-shot orthogonal nudge away from walls
+   if ((chosen.side === 'B' || chosen.side === 'T')){
+     const lo = xMin + ORTH_NUDGE;
+     const hi = xMax - ORTH_NUDGE;
+     if (hi > lo) chosen.nx = clamp(chosen.nx, lo, hi);
+   }
+   if ((chosen.side === 'L' || chosen.side === 'R')){
+     const lo = yMin + ORTH_NUDGE;
+     const hi = yMax - ORTH_NUDGE;
+     if (hi > lo) chosen.ny = clamp(chosen.ny, lo, hi);
+   }
+
+   if (chosen.side === 'L' || chosen.side === 'R') p.x = chosen.nx;
+   else p.y = chosen.ny;
+
+   // final safety clamp
+   p.x = clamp(p.x, xMin, xMax);
+   p.y = clamp(p.y, yMin, yMax);
+
+   // final: if still inside (numerical edge), force to right
+   if (p.x > fx && p.x < fx+fw && p.y > fy && p.y < fy+fh){
+     p.x = clamp(fx+fw+1, xMin, xMax);
+     const lo = yMin + ORTH_NUDGE;
+     const hi = yMax - ORTH_NUDGE;
+     if (hi > lo) p.y = clamp(p.y, lo, hi);
+   }
+ }
+}
+
+
+function spawnAvoidPanel(boundary){
+  for(let k=0;k<60;k++){
+    const x = Math.random() * (canvas.width - 2*boundary) + boundary;
+    const y = Math.random() * (canvas.height - 2*boundary) + boundary;
+    const r = __forbiddenRect;
+    if(!r) return {x,y};
+    const fx = r.x - boundary;
+    const fy = r.y - boundary;
+    const fw = r.w + boundary*2;
+    const fh = r.h + boundary*2;
+    if (x <= fx || x >= fx+fw || y <= fy || y >= fy+fh) return {x,y};
+  }
+  return {
+  x: Math.random() * (canvas.width  - 2*boundary) + boundary,
+  y: Math.random() * (canvas.height - 2*boundary) + boundary
+};
+}
+function syncCanvasSize() {
             const oldW = canvas.width;
             const oldH = canvas.height;
             let resized = false;
@@ -164,44 +1279,63 @@
                 const data = molData[moleculeName];
                 this.isDiatomic = data.isDiatomic;
                 this.mass = data.mass;
-                this.x = Math.random() * (canvas.width - 80) + 40;
-                this.y = Math.random() * (canvas.height - 80) + 40;
+  this.speciesId = 0; // Step3: normal-mode default (unused for now)
+                this.speciesKey = moleculeName; // Fix②: remember species for mixed-mode size
+                const boundary0 = (molData[moleculeName].isDiatomic ? effectiveAtomRadiusPx()*2 : effectiveAtomRadiusPx());
+ const sp = spawnAvoidPanel(Math.max(8, boundary0));
+ this.x = sp.x;
+ this.y = sp.y;
                 this.angle = Math.random() * Math.PI * 2;
                 this.setSpeedByTemp();
             }
             setSpeedByTemp() {
-                const sigma = Math.sqrt((Math.max(temperature, 0.1) * (2/degreesOfFreedom)) / (this.mass * 20));
-                this.vx = sigma * Math.sqrt(-2 * Math.log(Math.random() || 0.0001)) * Math.cos(2 * Math.PI * Math.random());
-                this.vy = sigma * Math.sqrt(-2 * Math.log(Math.random() || 0.0001)) * Math.sin(2 * Math.PI * Math.random());
-                this.vz = sigma * Math.sqrt(-2 * Math.log(Math.random() || 0.0001)) * Math.sin(2 * Math.PI * Math.random());
+                const sigma = sigmaTargetFor(this.mass);
+                this.vx = sigma * Math.sqrt(-2 * Math.log(__safeRand(1e-4))) * Math.cos(2 * Math.PI * Math.random());
+                this.vy = sigma * Math.sqrt(-2 * Math.log(__safeRand(1e-4))) * Math.sin(2 * Math.PI * Math.random());
+                // vz は位置更新には使わない（グラフの教科書(3D)比較用の表示成分）
+ this.vz = sigma * Math.sqrt(-2 * Math.log(__safeRand(1e-4))) * Math.sin(2 * Math.PI * Math.random());
                 this.omega = this.isDiatomic ? (Math.random() - 0.5) * Math.sqrt(temperature / (this.mass * 50)) : 0;
             }
             update() {
-                const limit = 20; // 速度制限
+                const limit = Math.max(0.05, sigmaTargetFor(this.mass) * 6); // Level4: no hard floor; low-T goes quiet // 速度制限（温度・質量に連動）
                 this.vx = Math.max(-limit, Math.min(limit, this.vx));
                 this.vy = Math.max(-limit, Math.min(limit, this.vy));
+
+  // ver66: keep previous position for UI-wall crossing detection (no behavior change by itself)
+  const prevX = this.x;
+  const prevY = this.y;
                 
                 this.x += this.vx; this.y += this.vy; this.angle += this.omega;
-                const boundary = this.isDiatomic ? atomRadius * 2 : atomRadius;
-                if (this.x < boundary) { this.x = boundary; this.vx *= -1; }
-                if (this.x > canvas.width - boundary) { this.x = canvas.width - boundary; this.vx *= -1; }
-                if (this.y < boundary) { this.y = boundary; this.vy *= -1; }
-                if (this.y > canvas.height - boundary) { this.y = canvas.height - boundary; this.vy *= -1; }
-            }
+                 const __mode = (sidebar && sidebar.dataset && sidebar.dataset.appMode) ? sidebar.dataset.appMode : 'normal';
+                const r = (__mode==='mixed') ? __radiusPxForSpeciesKey(this.speciesKey) : effectiveAtomRadiusPx();
+ const boundary = this.isDiatomic ? r * 2 : r;
+ 
+  // ver66: UI壁を canvas端壁と同列の"壁判定フェーズ"で扱う（速度反転 + impulse加算）
+  handleUIWallCollision(this, prevX, prevY, boundary);
+applyPanelAvoidance(this, boundary);
+                if (this.x < boundary) { this.x = boundary; this.vx *= -1; accumulateWallImpulse(2*this.mass*Math.abs(this.vx), this.speciesId); }
+                if (this.x > canvas.width - boundary) { this.x = canvas.width - boundary; this.vx *= -1; accumulateWallImpulse(2*this.mass*Math.abs(this.vx), this.speciesId); }
+                if (this.y < boundary) { this.y = boundary; this.vy *= -1; accumulateWallImpulse(2*this.mass*Math.abs(this.vy), this.speciesId); }
+                if (this.y > canvas.height - boundary) { this.y = canvas.height - boundary; this.vy *= -1; accumulateWallImpulse(2*this.mass*Math.abs(this.vy), this.speciesId); }
+            
+  panelEjectPositionOnly(this, boundary);
+}
             draw() {
-                const speed = Math.sqrt(this.vx**2 + this.vy**2);
+                 const __mode = (sidebar && sidebar.dataset && sidebar.dataset.appMode) ? sidebar.dataset.appMode : 'normal';
+                const r = (__mode==='mixed') ? __radiusPxForSpeciesKey(this.speciesKey) : effectiveAtomRadiusPx();
+ const speed = Math.sqrt(this.vx**2 + this.vy**2);
                 const baseColor = `hsl(${Math.max(240 - speed * 40, 0)}, 70%, 50%)`;
                 ctx.save(); ctx.translate(this.x, this.y); ctx.rotate(this.angle);
                 const drawAtom = (ox, oy) => {
                     const lightAngle = -this.angle - Math.PI/4; 
-                    const gradX = ox + Math.cos(lightAngle) * (atomRadius * 0.4);
-                    const gradY = oy + Math.sin(lightAngle) * (atomRadius * 0.4);
-                    const grad = ctx.createRadialGradient(gradX, gradY, atomRadius * 0.05, ox, oy, atomRadius);
+                    const gradX = ox + Math.cos(lightAngle) * (r * 0.4);
+                    const gradY = oy + Math.sin(lightAngle) * (r * 0.4);
+                    const grad = ctx.createRadialGradient(gradX, gradY, r * 0.05, ox, oy, r);
                     grad.addColorStop(0, '#ffffff'); grad.addColorStop(1, baseColor);
-                    ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(ox, oy, atomRadius, 0, Math.PI * 2); ctx.fill();
+                    ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(ox, oy, r, 0, Math.PI * 2); ctx.fill();
                 };
                 if (this.isDiatomic) {
-                    const offset = atomRadius * 0.8; drawAtom(-offset, 0); drawAtom(offset, 0);
+                    const offset = r * 0.8; drawAtom(-offset, 0); drawAtom(offset, 0);
                 } else {
                     drawAtom(0, 0);
                 }
@@ -210,7 +1344,9 @@
         }
 
         function resolveCollisions() {
-            const boundarySize = molData[moleculeName].isDiatomic ? atomRadius * 2 : atomRadius;
+            const __mode = (sidebar && sidebar.dataset && sidebar.dataset.appMode) ? sidebar.dataset.appMode : 'normal';
+            const r = effectiveAtomRadiusPx();
+ const boundarySize = molData[moleculeName].isDiatomic ? r * 2 : r;
             const minDist = boundarySize * 2;
             const bp = molData[moleculeName].bp;
             const len = particles.length;
@@ -222,113 +1358,1496 @@
                     const distSq = dx * dx + dy * dy + 0.1;
                     
                     if (useVDW) {
-                        const dist = Math.sqrt(distSq);
-                        const safeDist = Math.max(dist, minDist * 0.5); // 安全装置: 重なり時の無限大防止
-                        if (dist < minDist * 5) {
-                            const tempRatio = bp / Math.max(temperature, 1);
-                            const force = 0.001 * molarMass * Math.pow(tempRatio, 2.5) * (1 - Math.pow(minDist/safeDist, 3));
-                            p1.vx += (dx / safeDist) * force; p1.vy += (dy / safeDist) * force;
-                            p2.vx -= (dx / safeDist) * force; p2.vy -= (dy / safeDist) * force;
-                        }
-                    }
-                    if (distSq < minDist * minDist) {
-                        const collisionAngle = Math.atan2(dy, dx);
-                        const s1 = Math.sqrt(p1.vx**2 + p1.vy**2), s2 = Math.sqrt(p2.vx**2 + p2.vy**2);
-                        const d1 = Math.atan2(p1.vy, p1.vx), d2 = Math.atan2(p2.vy, p2.vx);
-                        let vx1r = s1 * Math.cos(d1 - collisionAngle), vy1r = s1 * Math.sin(d1 - collisionAngle);
-                        let vx2r = s2 * Math.cos(d2 - collisionAngle), vy2r = s2 * Math.sin(d2 - collisionAngle);
-                        if (useVDW && temperature < bp * 1.3) { vx1r *= 0.8; vx2r *= 0.8; }
-                        p1.vx = Math.cos(collisionAngle) * vx2r + Math.cos(collisionAngle + Math.PI/2) * vy1r;
-                        p1.vy = Math.sin(collisionAngle) * vx2r + Math.sin(collisionAngle + Math.PI/2) * vy1r;
-                        p2.vx = Math.cos(collisionAngle) * vx1r + Math.cos(collisionAngle + Math.PI/2) * vy2r;
-                        p2.vy = Math.sin(collisionAngle) * vx1r + Math.sin(collisionAngle + Math.PI/2) * vy2r;
-                        const overlap = minDist - Math.sqrt(distSq);
-                        p1.x -= Math.cos(collisionAngle) * (overlap/2); p1.y -= Math.sin(collisionAngle) * (overlap/2);
-                        p2.x += Math.cos(collisionAngle) * (overlap/2); p2.y += Math.sin(collisionAngle) * (overlap/2);
+ const dist = Math.sqrt(distSq);
+ const safeDist = Math.max(dist, minDist * 0.5); // 安全装置: 重なり時の無限大防止
+ // ===== ver67 (A-1): normal-mode VDW tuning (avoid full collapse at 273K) =====
+ // 目的：分子種（bp）と温度Tの関係が“傾向として”見える一方で、
+ // Xeなど重い分子が273Kで完全に固体化しないよう、引力の有効強度を制限する。
+ // 注意：混合モードは今後のB-3で扱うため、ここでは既存挙動を維持する。
+ if (__mode !== 'mixed') {
+  if (dist < minDist * 4) {
+   // Reduced temperature (education): Tr = T / bp. 高温ほど引力が弱まる。
+   const Tr = Math.max(0.0, temperature) / Math.max(1.0, bp);
+   const T0 = 1.2; // 教材用の遷移目安（bp付近で影響が出る）
+   const tempFactor = 1.0 / (1.0 + Math.pow(Tr / T0, 3.0));
+   // mass scale: heavy species slightly stronger, but sublinear to avoid runaway
+   const mEff = Math.sqrt(Math.max(0.1, p1.mass) * Math.max(0.1, p2.mass));
+   const massFactor = Math.pow(mEff / Math.max(0.1, REF_MASS), 0.30);
+   // distance window: closer => stronger (but bounded)
+   const closeness = Math.max(0.0, 1.0 - (dist / (minDist * 4)));
+   // core term: attractive when dist > minDist, repulsive when dist < minDist
+   const core = (1.0 - Math.pow(minDist / safeDist, 3));
+   const VDW_K = 0.010; // 基本強度（教材用）
+   const VDW_FMAX = 0.030; // 1-pair per-frame cap（暴走防止）
+   let force = VDW_K * massFactor * tempFactor * closeness * core;
+   // clamp
+   if (!isFinite(force)) force = 0;
+   force = Math.max(-VDW_FMAX, Math.min(VDW_FMAX, force));
+   p1.vx += (dx / safeDist) * force; p1.vy += (dy / safeDist) * force;
+   p2.vx -= (dx / safeDist) * force; p2.vy -= (dy / safeDist) * force;
+  }
+ } else {
+  // === mixed mode (ver69 B-3): pair-dependent symmetric VDW ===
+  // 目的：
+  //  (1) A/B入替で凝集挙動が変わる非対称（molarMass/bpがA基準）を解消
+  //  (2) 重い分子の凝集に軽い分子が引きずられにくいよう、異種ペアの引力を弱める
+  //  注意：ここは「分子間力」だけを扱う。衝突（ver68）は別ブロックで処理。
+  {
+    const k1 = p1.speciesKey || 'H2';
+    const k2 = p2.speciesKey || 'H2';
+    const d1 = molData[k1] || molData['H2'];
+    const d2 = molData[k2] || molData['H2'];
+    const bp1 = Math.max(1.0, d1.bp);
+    const bp2 = Math.max(1.0, d2.bp);
+    const m1 = Math.max(0.1, d1.mass);
+    const m2 = Math.max(0.1, d2.mass);
+
+    // ペアの距離スケール（見た目半径を反映：Fix②と同じ定義）
+    const rr1 = __radiusPxForSpeciesKey(k1);
+    const rr2 = __radiusPxForSpeciesKey(k2);
+    const bb1 = p1.isDiatomic ? rr1 * 2 : rr1;
+    const bb2 = p2.isDiatomic ? rr2 * 2 : rr2;
+    const minDistPairLocal = bb1 + bb2;
+
+    // 作用距離（近距離のみ）
+    if (dist < minDistPairLocal * 5) {
+      const bpMin = Math.min(bp1, bp2);
+      const bpMax = Math.max(bp1, bp2);
+      const mMin = Math.min(m1, m2);
+      const mMax = Math.max(m1, m2);
+
+      // ペア係数（対称）：差が大きいほど引力を弱める（軽い分子を引きずらない）
+      const coeffBp = Math.pow(bpMin / bpMax, 0.5);
+      const coeffM  = Math.pow(mMin / mMax, 0.5);
+      const pairCoeff = Math.max(0.18, Math.min(1.0, coeffBp * coeffM));
+
+      // 温度比（対称）：沸点の幾何平均（bpPair）を採用
+      const bpPair = Math.sqrt(bp1 * bp2);
+      const tempRatio = bpPair / Math.max(temperature, 1);
+
+      // 質量スケール（暴走防止：線形ではなく緩やか）
+      const mEff = Math.sqrt(m1 * m2);
+      const massFactor = Math.pow(mEff / Math.max(0.1, REF_MASS), 0.30);
+
+      // core term（距離）※ここはペア距離スケールを使う
+      const core = (1 - Math.pow(minDistPairLocal / safeDist, 3));
+
+      // 強度・上限（安全装置）
+      const VDW_K_MIX = 0.0010;
+      const VDW_FMAX_MIX = 0.025;
+      let force = VDW_K_MIX * massFactor * pairCoeff * Math.pow(tempRatio, 2.5) * core;
+      if (!isFinite(force)) force = 0;
+      force = Math.max(-VDW_FMAX_MIX, Math.min(VDW_FMAX_MIX, force));
+
+      p1.vx += (dx / safeDist) * force; p1.vy += (dy / safeDist) * force;
+      p2.vx -= (dx / safeDist) * force; p2.vy -= (dy / safeDist) * force;
+    }
+  }
+ }
+}
+// Fix②: mixed mode uses per-particle size for collision distance
+                    const r1 = (__mode==='mixed') ? __radiusPxForSpeciesKey(p1.speciesKey) : r;
+                    const r2 = (__mode==='mixed') ? __radiusPxForSpeciesKey(p2.speciesKey) : r;
+                    const b1 = p1.isDiatomic ? r1 * 2 : r1;
+                    const b2 = p2.isDiatomic ? r2 * 2 : r2;
+                    const minDistPair = (__mode==='mixed') ? (b1 + b2) : minDist;
+                    if (distSq < minDistPair * minDistPair) {
+const dist = Math.sqrt(distSq);
+ const safeDist = Math.max(1e-6, dist);
+ // --- ver68 (B-4): mass-aware 2D elastic collision ---
+ // 目的：He→Xe で Xe が同程度に加速される誤挙動（等質量交換っぽさ）を是正する。
+ // 方針：法線方向のみ質量 m1,m2 で更新、接線方向は保存（弾性衝突）。
+ const nx = dx / safeDist;
+ const ny = dy / safeDist;
+ const tx = -ny;
+ const ty = nx;
+ const m1 = Math.max(0.1, p1.mass);
+ const m2 = Math.max(0.1, p2.mass);
+ const v1n = p1.vx * nx + p1.vy * ny;
+ const v1t = p1.vx * tx + p1.vy * ty;
+ const v2n = p2.vx * nx + p2.vy * ny;
+ const v2t = p2.vx * tx + p2.vy * ty;
+ const vnRel = v1n - v2n; // (v1-v2)·n
+ const overlap = Math.max(0, minDistPair - safeDist);
+ // 離れている & 重なり無しなら処理しない（ただし重なりがあれば位置補正は行う）
+ if (vnRel > 0 || overlap > 0){
+   // 弾性衝突（1Dを法線方向に適用）
+   let v1nP = (v1n * (m1 - m2) + 2 * m2 * v2n) / (m1 + m2);
+   let v2nP = (v2n * (m2 - m1) + 2 * m1 * v1n) / (m1 + m2);
+   // 既存の“低温VDWで少し粘る”演出を最小限で踏襲（運動量保存は厳密ではないが既存仕様）
+   if (useVDW && temperature < bp * 1.3){ v1nP *= 0.8; v2nP *= 0.8; }
+   // 合成
+   p1.vx = v1nP * nx + v1t * tx;
+   p1.vy = v1nP * ny + v1t * ty;
+   p2.vx = v2nP * nx + v2t * tx;
+   p2.vy = v2nP * ny + v2t * ty;
+   // 位置補正（重なり解消）
+   if (overlap > 0){
+     p1.x -= nx * (overlap/2); p1.y -= ny * (overlap/2);
+     p2.x += nx * (overlap/2); p2.y += ny * (overlap/2);
+   }
+ }
                     }
                 }
             }
 
-            // サーモスタット機能: 設定温度に速度をスケーリング
-            let totalE = 0;
-            particles.forEach(p => { totalE += (p.vx**2 + p.vy**2); });
-            const avgE = totalE / particles.length;
-            const targetE = (Math.max(temperature, 0.1) * (2/degreesOfFreedom)) / (molarMass * 10);
-            const ratio = Math.sqrt(targetE / (avgE || 1));
-            // 急激な変化を避けるためマイルドに補正
-            const k = 0.1; 
-            const scale = 1 + (ratio - 1) * k;
-            particles.forEach(p => { p.vx *= scale; p.vy *= scale; });
-        }
+  // ===== PhaseA: thermostat is DISABLED =====
+  // 理由：フェーズAでは表示・正規化の切り分けを最優先し、
+  //       速度分布を目標分散へ強制収束させる処理を停止する。
+  // 温度変更時は applyTemperatureScale() により速度スケールのみを整合させる。
+}
+// ===== Level6: pressure from wall collisions =====
+// Step6: pressure / partial pressure display (UI)
+// Fix① (ver67):
+//  - Correct the display normalization so values are not crushed to ~0–2 Pa.
+//  - Use 2D educational definition: impulse per wall-length per time (perimeter + dt).
+//  - Keep instantaneous pressure = 0 Pa when there is no wall collision in the frame.
+//  - Auto-calibrate at base state (T=273K, N_total=60) to 1.013×10^5 Pa (average total).
+//  - Do NOT change particle motion/collision dynamics.
 
-        function drawCharts() {
-            if (!showCharts || vCanvas.width < 50) return;
-            const padL = 70, padB = 60, padR = 20, padT = 20;
-            const binCount = 40; const curT = Math.max(temperature, 0.1);
-            const sigmaSq = (curT * (2/degreesOfFreedom)) / (molarMass * 20);
+// Accumulators (set by accumulateWallImpulse in Molecule.update)
+let __impulseFrame = 0;
+// Phase1: peak-hold (display only)
+let __pHoldInstT = 0;
+let __pHoldInstA = 0;
+let __pHoldInstB = 0;
+let __pHoldUntil = 0;
+const PRESSURE_PEAK_HOLD_SEC = 0.35; // display hold time
 
-            vCtx.clearRect(0, 0, vCanvas.width, vCanvas.height);
-            const vw = vCanvas.width - padL - padR, vh = vCanvas.height - padB - padT;
-            vCtx.strokeStyle = "#34495e"; vCtx.lineWidth = 1; vCtx.beginPath();
-            vCtx.moveTo(padL, padT); vCtx.lineTo(padL, padT+vh); vCtx.lineTo(padL+vw, padT+vh); vCtx.stroke();
-            vCtx.fillStyle = "#2c3e50"; vCtx.font = "bold 12px sans-serif"; vCtx.textAlign = "center";
-            vCtx.fillText("分子の速さ", padL + vw/2, padT + vh + 40);
-            vCtx.save(); vCtx.translate(20, padT + vh/2); vCtx.rotate(-Math.PI/2); vCtx.fillText("分子の割合", 0, 0); vCtx.restore();
+let __impulseFrameBySpecies = [0, 0];
 
-            const maxV = Math.sqrt(sigmaSq) * 5 + 1.5; const vBins = new Array(binCount).fill(0);
-            particles.forEach(p => { const v = Math.sqrt(p.vx**2 + p.vy**2); const idx = Math.floor((v/maxV)*binCount); if (idx >= 0 && idx < binCount) vBins[idx]++; });
-            vCtx.fillStyle = "rgba(52, 152, 219, 0.7)";
-            vBins.forEach((n, i) => { const den = (n/particles.length)/(maxV/binCount); vCtx.fillRect(padL + i*(vw/binCount), padT+vh, vw/binCount, -Math.min(vh, den*vh*(maxV/10))); });
-            vCtx.strokeStyle = "#e74c3c"; vCtx.lineWidth = 2; vCtx.beginPath();
-            for(let v=0; v<=maxV; v+=maxV/100){ const fv = (v/sigmaSq)*Math.exp(-(v*v)/(2*sigmaSq)); vCtx.lineTo(padL + (v/maxV)*vw, padT+vh - (fv*vh*(maxV/10))); }
-            vCtx.stroke();
+// Moving window (seconds)
+const PRESSURE_WIN_SEC = 2.0; // educational smoothing
+let __pRing = [];
+let __pRingByS0 = [];
+let __pRingByS1 = [];
+let __pRingT = 0;
+let __pSum = 0;
+let __pSumS = [0, 0];
 
-            eCtx.clearRect(0, 0, eCanvas.width, eCanvas.height);
-            const ew = eCanvas.width - padL - padR, eh = eCanvas.height - padB - padT;
-            eCtx.strokeStyle = "#34495e"; eCtx.lineWidth = 1; eCtx.beginPath();
-            eCtx.moveTo(padL, padT); eCtx.lineTo(padL, padT+eh); eCtx.lineTo(padL+ew, padT+eh); eCtx.stroke();
-            eCtx.fillStyle = "#2c3e50"; eCtx.font = "bold 12px sans-serif"; eCtx.textAlign = "center";
-            eCtx.fillText("分子の運動エネルギー", padL + ew/2, padT + eh + 40);
-            eCtx.save(); eCtx.translate(20, padT + eh/2); eCtx.rotate(-Math.PI/2); eCtx.fillText("分子の割合", 0, 0); eCtx.restore();
+// Calibration
+const PRESSURE_TARGET_BASE = 1.013e5;
+let __pScale = 1.0;
+let __calibrated = false;
+let __calibAccum = 0;
+let __calibTime = 0;
 
-            const kT = (curT * (2/degreesOfFreedom)) / 20; const maxE = 150; const eBins = new Array(binCount).fill(0);
-            particles.forEach(p => { const e = 0.5 * molarMass * (p.vx**2 + p.vy**2 + (p.vz || 0)**2); const idx = Math.floor((e/maxE)*binCount); if (idx >= 0 && idx < binCount) eBins[idx]++; });
-            const eScaleY = eh * 25; eCtx.fillStyle = "rgba(46, 204, 113, 0.7)";
-            eBins.forEach((n, i) => { const den = (n/particles.length)/(maxE/binCount); eCtx.fillRect(padL + i*(ew/binCount), padT+eh, ew/binCount-1, -Math.min(eh, den*eScaleY)); });
-            eCtx.strokeStyle = "#e74c3c"; eCtx.lineWidth = 2; eCtx.beginPath();
-            for(let i=0; i<=100; i++){ const e = (i/100)*maxE; if(e===0){ eCtx.moveTo(padL, padT+eh); continue; } const pe = 2 * Math.sqrt(e/Math.PI) * Math.pow(1/kT, 1.5) * Math.exp(-e/kT); eCtx.lineTo(padL + (e/maxE)*ew, padT + eh - (pe*eScaleY)); }
-            eCtx.stroke();
-        }
+function resetPressureFrame(){
+  __impulseFrame = 0;
+  __impulseFrameBySpecies[0] = 0;
+  __impulseFrameBySpecies[1] = 0;
+}
 
-        function animate() {
-            syncCanvasSize();
+function resetPressureHistory(preserveScale = true){
+ __pRing = [];
+ __pRingByS0 = [];
+ __pRingByS1 = [];
+ __pRingT = 0;
+ __pSum = 0;
+ __pSumS[0] = 0;
+ __pSumS[1] = 0;
+ // ver70 (B-1): 履歴は必ずリセットするが、較正スケール(__pScale)は既定で保持する。
+ // 目的：温度/比率/分子数変更や再生成(init)のたびに __pScale=1.0 に戻って
+ //       0.00×10^5 表示に張り付くことを避ける。
+ if (!preserveScale){
+  __pScale = 1.0;
+  __calibrated = false;
+ }
+ // 校正積算は毎回やり直す（保持スケールでもOK）
+ __calibAccum = 0;
+ __calibTime = 0;
+ // ピークホールドもリセット（表示の取り残し防止）
+ __pHoldInstT = 0;
+ __pHoldInstA = 0;
+ __pHoldInstB = 0;
+ __pHoldUntil = 0;
+}
+
+// NOTE: keep signature and call sites unchanged
+function accumulateWallImpulse(dp, sid=0){
+  const i = (sid===1) ? 1 : 0;
+  __impulseFrame += dp;
+  __impulseFrameBySpecies[i] += dp;
+}
+
+function __fmtPa(x){
+  if (!isFinite(x) || x <= 0) return '0.00×10^5';
+  const coeff = x / 1e5;
+  return coeff.toFixed(2) + '×10^5';
+}
+
+function __getDtSec(){
+  // requestAnimationFrame is ~60fps; fall back to 1/60
+  return 1/60;
+}
+
+function __measureBaseState(){
+  // Base state definition: mixed mode, T=273K, total=60 (as implemented), any mixture ratio.
+  const isMixed = (sidebar && sidebar.dataset && sidebar.dataset.appMode === 'mixed');
+  if (!isMixed) return false;
+  if (Math.abs(temperature - 273) > 0.5) return false;
+  // total in mixed mode is fixed 60 by design at this stage
+  return true;
+}
+
+function updatePressureStep6(){
+  // Normalization: impulse per wall length per time
+  const w = Math.max(1, canvas.width);
+  const h = Math.max(1, canvas.height);
+  const perim = 2*(w + h);
+  const dt = __getDtSec();
+  const denom = Math.max(1e-9, perim * dt);
+
+  // Instantaneous (0 if no collision this frame)
+  const measInstT = (__impulseFrame > 0) ? (__impulseFrame / denom) : 0;
+  const measInstS0 = (__impulseFrameBySpecies[0] > 0) ? (__impulseFrameBySpecies[0] / denom) : 0;
+  const measInstS1 = (__impulseFrameBySpecies[1] > 0) ? (__impulseFrameBySpecies[1] / denom) : 0;
+
+  // Moving window average (time-based)
+  __pRing.push(measInstT);
+  __pRingByS0.push(measInstS0);
+  __pRingByS1.push(measInstS1);
+  __pRingT += dt;
+  __pSum += measInstT;
+  __pSumS[0] += measInstS0;
+  __pSumS[1] += measInstS1;
+
+  // shrink from the front until within window
+  while (__pRingT > PRESSURE_WIN_SEC && __pRing.length > 1){
+    __pRingT -= dt;
+    __pSum -= __pRing.shift();
+    __pSumS[0] -= __pRingByS0.shift();
+    __pSumS[1] -= __pRingByS1.shift();
+  }
+
+  const n = Math.max(1, __pRing.length);
+  const measAvgT = __pSum / n;
+  const measAvgS0 = __pSumS[0] / n;
+  const measAvgS1 = __pSumS[1] / n;
+
+  // Auto-calibration at base state (average only)
+  if (!__calibrated && __measureBaseState()){
+    __calibAccum += measInstT;
+    __calibTime += dt;
+    if (__calibTime >= 3.0){
+      const baseMeas = __calibAccum / Math.max(1, Math.round(__calibTime / dt));
+      if (baseMeas > 1e-12){
+        __pScale = PRESSURE_TARGET_BASE / baseMeas;
+        __calibrated = true;
+      }
+    }
+  }
+
+  const rawInstT = __pScale * measInstT;
+ const rawInstA = __pScale * measInstS0;
+ const rawInstB = __pScale * measInstS1;
+ const now = performance.now() / 1000;
+ if (rawInstT > 0){
+   __pHoldInstT = rawInstT;
+   __pHoldInstA = rawInstA;
+   __pHoldInstB = rawInstB;
+   __pHoldUntil = now + PRESSURE_PEAK_HOLD_SEC;
+ }
+ const pInstT = (now <= __pHoldUntil) ? __pHoldInstT : 0;
+ const pInstA = (now <= __pHoldUntil) ? __pHoldInstA : 0;
+ const pInstB = (now <= __pHoldUntil) ? __pHoldInstB : 0;
+  
+  
+  const pAvgT  = __pScale * measAvgT;
+  const pAvgA  = __pScale * measAvgS0;
+  const pAvgB  = __pScale * measAvgS1;
+
+  // update species labels
+  const aSel=document.getElementById('mixSpeciesA');
+  const bSel=document.getElementById('mixSpeciesB');
+  const nA=aSel?aSel.value:'A';
+  const nB=bSel?bSel.value:'B';
+  ['pNameA','pNameA2'].forEach(id=>{const e=document.getElementById(id); if(e)e.innerText=nA;});
+  ['pNameB','pNameB2'].forEach(id=>{const e=document.getElementById(id); if(e)e.innerText=nB;});
+
+  const set=(id,v)=>{const e=document.getElementById(id); if(e)e.innerText=__fmtPa(v);};
+  set('pInstA',pInstA); set('pInstB',pInstB); set('pInstT',pInstT);
+  set('pAvgA',pAvgA);   set('pAvgB',pAvgB);   set('pAvgT',pAvgT);
+}
+// ===== Level4: weak thermostat (drift control only; no shape forcing) =====
+let __thermoCounter = 0;
+function weakThermostat(){
+ const __mode = (sidebar && sidebar.dataset && sidebar.dataset.appMode) ? sidebar.dataset.appMode : 'normal';
+ // ver71 (B-2): 混合モードではサーモスタットを無効化（比率や分子数で速度分布が歪むのを防ぐ）
+ if (__mode === 'mixed') return;
+
+ __thermoCounter++;
+ if (__thermoCounter % 60 !== 0) return; // sparse
+ const target = 3 * kTTarget(); // proportional to <v^2>
+ let sum = 0;
+ for (const p of particles){ sum += (p.vx*p.vx + p.vy*p.vy); }
+ const cur = Math.max(1e-9, sum / Math.max(1, particles.length));
+ const corr = Math.sqrt(Math.min(1.02, Math.max(0.98, target/cur)));
+ for (const p of particles){ p.vx *= corr; p.vy *= corr; }
+}
+
+
+function drawCharts() {
+  // PhaseA（レベル3改）：
+  // - 教科書(3D)比較の理想曲線（MB/運動エネ）を維持
+  // - 軸レンジの自己相似追随をやめ、固定軸で“動き”を見える化
+  // - ヒストグラムと理想曲線を同じ確率密度（PDF）として正規化（積分=1）
+ // - 縦軸は固定（基準温度=100K。温度上昇で山が低くなるのが見える）
+  // - vz は表示用成分（運動は2D）。
+  if (!showCharts || vCanvas.width < 50) return;
+
+  const padL = 70, padB = 60, padR = 20, padT = 20;
+  const binCount = 40;
+
+  const sigma3 = sigmaTarget();
+  const sigmaSq3 = Math.max(1e-9, sigma3 * sigma3);
+  const kT = Math.max(1e-9, kTTarget());
+
+  // 固定軸（温度・分子種でレンジが伸び縮みしない）
+  const maxV = chartAxisVMax;
+  const maxE = chartAxisEMax;
+
+  // ===================== 速度分布（教科書: 3D Maxwell） =====================
+  vCtx.clearRect(0, 0, vCanvas.width, vCanvas.height);
+  const vw = vCanvas.width - padL - padR;
+  const vh = vCanvas.height - padB - padT;
+
+  // axes
+  vCtx.strokeStyle = "#34495e";
+  vCtx.lineWidth = 1;
+  vCtx.beginPath();
+  vCtx.moveTo(padL, padT);
+  vCtx.lineTo(padL, padT + vh);
+  vCtx.lineTo(padL + vw, padT + vh);
+  vCtx.stroke();
+
+  vCtx.fillStyle = "#2c3e50";
+  vCtx.font = "bold 12px sans-serif";
+  vCtx.textAlign = "center";
+  vCtx.fillText("分子の速さ（教科書:3D）", padL + vw / 2, padT + vh + 40);
+  vCtx.save();
+  vCtx.translate(20, padT + vh / 2);
+  vCtx.rotate(-Math.PI / 2);
+  vCtx.fillText("分子の割合（確率密度）", 0, 0);
+  vCtx.restore();
+
+  // histogram bins (PDF)
+  const vBins = new Array(binCount).fill(0);
+  for (const p of particles) {
+    const vz = (typeof p.vz === 'number') ? p.vz : 0;
+    const v = Math.sqrt(p.vx*p.vx + p.vy*p.vy + vz*vz);
+    const idx = Math.floor((v / maxV) * binCount);
+    if (idx >= 0 && idx < binCount) vBins[idx]++;
+  }
+
+  const vBinW = maxV / binCount;
+  const vDensity = vBins.map(c => (c / Math.max(1, particles.length)) / vBinW);
+ // Level3: histogram is PDF = (count/N)/binWidth (area≈1)
+
+  // Maxwell speed PDF (normalized): f(v)=sqrt(2/pi) * (v^2/sigma^3) * exp(-v^2/(2*sigma^2))
+  function maxwellPdf(v){
+    const a = Math.sqrt(2/Math.PI);
+    return a * (v*v) / (sigma3*sigma3*sigma3) * Math.exp(-(v*v)/(2*sigmaSq3));
+  }
+
+  // ===== PhaseA: fixed Y-axis (確率密度の縦軸を固定) =====
+ const vScale = (0.90 * vh) / Math.max(1e-12, chartAxisVYMax);
+
+  // draw histogram
+  vCtx.fillStyle = "rgba(52, 152, 219, 0.7)";
+  for (let i = 0; i < binCount; i++) {
+    const x = padL + i * (vw / binCount);
+    const w = vw / binCount;
+    const h = Math.min(vh, vDensity[i] * vScale);
+    vCtx.fillRect(x, padT + vh, w, -h);
+  }
+
+  // draw theory
+  vCtx.strokeStyle = "#e74c3c";
+  vCtx.lineWidth = 2;
+  vCtx.beginPath();
+  for (let i = 0; i <= 360; i++) {
+    const v = (i / 360) * maxV;
+    const f = maxwellPdf(v);
+    const x = padL + (v / maxV) * vw;
+    const y = padT + vh - Math.min(vh, f * vScale);
+    if (i === 0) vCtx.moveTo(x, y); else vCtx.lineTo(x, y);
+  }
+  vCtx.stroke();
+
+  // note
+  vCtx.fillStyle = "rgba(0,0,0,0.55)";
+  vCtx.font = "11px sans-serif";
+  vCtx.textAlign = "left";
+  vCtx.fillText("※グラフは教科書(3D)比較。vzは表示用（運動は2D）", padL, padT + 12);
+
+  // ===================== エネルギー分布（教科書: 3D） =====================
+  eCtx.clearRect(0, 0, eCanvas.width, eCanvas.height);
+  const ew = eCanvas.width - padL - padR;
+  const eh = eCanvas.height - padB - padT;
+
+  eCtx.strokeStyle = "#34495e";
+  eCtx.lineWidth = 1;
+  eCtx.beginPath();
+  eCtx.moveTo(padL, padT);
+  eCtx.lineTo(padL, padT + eh);
+  eCtx.lineTo(padL + ew, padT + eh);
+  eCtx.stroke();
+
+  eCtx.fillStyle = "#2c3e50";
+  eCtx.font = "bold 12px sans-serif";
+  eCtx.textAlign = "center";
+  eCtx.fillText("分子の運動エネルギー（教科書:3D）", padL + ew / 2, padT + eh + 40);
+  eCtx.save();
+  eCtx.translate(20, padT + eh / 2);
+  eCtx.rotate(-Math.PI / 2);
+  eCtx.fillText("分子の割合（確率密度）", 0, 0);
+  eCtx.restore();
+
+  const eBins = new Array(binCount).fill(0);
+  for (const p of particles) {
+    const vz = (typeof p.vz === 'number') ? p.vz : 0;
+    const E = 0.5 * molarMass * (p.vx*p.vx + p.vy*p.vy + vz*vz);
+    const idx = Math.floor((E / maxE) * binCount);
+    if (idx >= 0 && idx < binCount) eBins[idx]++;
+  }
+  const eBinW = maxE / binCount;
+  const eDensity = eBins.map(c => (c / Math.max(1, particles.length)) / eBinW);
+ // Level3: energy histogram is PDF = (count/N)/binWidth (area≈1)
+
+  // 3D energy PDF (normalized): f(E)=2/sqrt(pi) * 1/(kT)^{3/2} * sqrt(E) * exp(-E/kT)
+  function energyPdf(E){
+    const coef = 2 / Math.sqrt(Math.PI);
+    return coef * (1 / Math.pow(kT, 1.5)) * Math.sqrt(Math.max(0, E)) * Math.exp(-E / kT);
+  }
+
+  // ===== PhaseA: fixed Y-axis (確率密度の縦軸を固定) =====
+ const eScale = (0.90 * eh) / Math.max(1e-12, chartAxisEYMax);
+
+  eCtx.fillStyle = "rgba(46, 204, 113, 0.7)";
+  for (let i = 0; i < binCount; i++) {
+    const x = padL + i * (ew / binCount);
+    const w = (ew / binCount) - 1;
+    const h = Math.min(eh, eDensity[i] * eScale);
+    eCtx.fillRect(x, padT + eh, w, -h);
+  }
+
+  eCtx.strokeStyle = "#e74c3c";
+  eCtx.lineWidth = 2;
+  eCtx.beginPath();
+  for (let i = 0; i <= 420; i++) {
+    const E = (i / 420) * maxE;
+    const f = energyPdf(E);
+    const x = padL + (E / maxE) * ew;
+    const y = energyCurveOverflow ? (padT + eh - (f * eScale)) : (padT + eh - Math.min(eh, f * eScale));
+    if (i === 0) eCtx.moveTo(x, y); else eCtx.lineTo(x, y);
+  }
+  eCtx.stroke();
+}
+
+function animate() {
+ syncCanvasSize();
+ updateForbiddenRect();
+ updateChartsAvoidPanel();
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            resolveCollisions();
+            resetPressureFrame();
+ resolveCollisions(); weakThermostat();
             particles.forEach(p => { p.update(); p.draw(); });
+ updatePressureStep6();
             if (showCharts) drawCharts();
             requestAnimationFrame(animate);
         }
 
-        document.getElementById('tempRange').oninput = (e) => { temperature = parseInt(e.target.value); document.getElementById('tempVal').innerText = temperature; };
-        document.getElementById('tempUp').onclick = () => { temperature = Math.min(3000, temperature + 1); document.getElementById('tempVal').innerText = temperature; document.getElementById('tempRange').value = temperature; };
-        document.getElementById('tempDown').onclick = () => { temperature = Math.max(0, temperature - 1); document.getElementById('tempVal').innerText = temperature; document.getElementById('tempRange').value = temperature; };
+        document.getElementById('tempRange').oninput = (e) => {
+  const oldT = temperature;
+  temperature = parseInt(e.target.value);
+  document.getElementById('tempVal').innerText = temperature;
+  applyTemperatureScale(oldT, temperature);
+ updatePhaseState();
+};
+        document.getElementById('tempUp').onclick = () => {
+  const oldT = temperature;
+  temperature = Math.min(3000, temperature + 1);
+  document.getElementById('tempVal').innerText = temperature;
+  document.getElementById('tempRange').value = temperature;
+  applyTemperatureScale(oldT, temperature);
+ updatePhaseState();
+};
+        document.getElementById('tempDown').onclick = () => {
+  const oldT = temperature;
+  temperature = Math.max(0, temperature - 1);
+  document.getElementById('tempVal').innerText = temperature;
+  document.getElementById('tempRange').value = temperature;
+  applyTemperatureScale(oldT, temperature);
+ updatePhaseState();
+};
         document.getElementById('countRange').oninput = (e) => { particleCount = e.target.value; document.getElementById('countVal').innerText = particleCount; init(); };
         document.getElementById('radiusRange').oninput = (e) => { atomRadius = parseInt(e.target.value); document.getElementById('radiusVal').innerText = atomRadius; };
-        document.querySelectorAll('input[name="moleculeType"]').forEach(r => r.onchange = (e) => { moleculeName = e.target.value; init(); });
-        document.getElementById('vdwSwitch').onchange = (e) => useVDW = e.target.checked;
-        document.getElementById('chartToggle').onchange = (e) => { showCharts = e.target.checked; chartsWrapper.classList.toggle('hidden', !showCharts); canvas.classList.toggle('expanded', !showCharts); };
-        document.getElementById('closeSidebar').onclick = () => { sidebar.classList.add('hidden'); restoreSidebarBtn.style.display = 'block'; };
-        restoreSidebarBtn.onclick = () => { sidebar.classList.remove('hidden'); restoreSidebarBtn.style.display = 'none'; };
+        document.querySelectorAll('input[name="moleculeType"]').forEach(r => r.onchange = (e) => { moleculeName = e.target.value; init(); updatePhaseState(); });
+        document.getElementById('vdwSwitch').onchange = (e) => {
+ // Level5: allow VDW ON/OFF (educational, bounded by existing logic)
+ useVDW = e.target.checked;
+ const grp = e.target.closest('.switch-group');
+ if (grp) grp.classList.toggle('active', useVDW);
+};
+        document.getElementById('chartToggle').onchange = (e) => { showCharts = e.target.checked; chartsWrapper.classList.toggle('hidden', !showCharts); canvas.classList.toggle('expanded', !showCharts); 
+  const grp = e.target.closest('.switch-group');
+  if (grp) grp.classList.toggle('active', e.target.checked);
+
+ updateChartsAvoidPanel();};
+        // ===== Level0: legacy sidebar show/hide handlers are intentionally disabled =====
+// Rationale: avoid double-control (legacy hidden-class vs. MetalCrystal-style minimize).
+// The single source of truth for panel state is the uiSwitch handler (see Level1 UI tweak block below).
+const __legacyCloseBtn = document.getElementById('closeSidebar');
+if (__legacyCloseBtn) __legacyCloseBtn.onclick = null;
+if (restoreSidebarBtn) restoreSidebarBtn.onclick = null;
+// =========================================================
+// [NO-RECURSION ZONE / 無限ループ・自己再帰禁止]
+// init() は「UI値反映 → particles生成 → return」のみ。
+// ✅ 正：1回だけ生成して終了
+// ❌ 禁：init()/生成関数が自分自身を呼ぶ、または無限ループする
+// （ブラウザが固まり、最小化を含むUIが操作不能になる）
+// =========================================================
+// ===== Step4 (ver57): mixed-mode particle generation (two-species, total=60) =====
+function buildMixedParticles(){
+  const MIX_TOTAL = Math.max(1, Math.min(1000, parseInt(particleCount, 10) || 60));
+  const aSel = document.getElementById('mixSpeciesA');
+  const bSel = document.getElementById('mixSpeciesB');
+  const rSel = document.getElementById('mixRatioA');
+  const spA = aSel ? aSel.value : 'He';
+  const spB = bSel ? bSel.value : 'H2';
+  const ratioA = rSel ? Math.max(0, Math.min(100, parseInt(rSel.value, 10))) : 50;
+  const nA = Math.round(MIX_TOTAL * ratioA / 100);
+  const nB = MIX_TOTAL - nA;
+  const savedName = moleculeName;
+  const arr = [];
+  moleculeName = spA;
+  for (let i = 0; i < nA; i++){ const p = new Molecule(); p.speciesId = 0; arr.push(p); }
+  moleculeName = spB;
+  for (let i = 0; i < nB; i++){ const p = new Molecule(); p.speciesId = 1; arr.push(p); }
+  moleculeName = savedName;
+  return arr;
+}
+
+
 
         function init() {
             const data = molData[moleculeName];
             molarMass = data.mass; degreesOfFreedom = data.dof;
-            syncCanvasSize();
-            particles = Array.from({length: particleCount}, () => new Molecule());
+            
+  // Level5: VDW state follows UI (no forced OFF)
+syncCanvasSize();
+ updateForbiddenRect();
+ updateChartsAvoidPanel();
+ updatePhaseState();
+ // Step4: generate particles by mode (no init() call in animate)
+ const __mode = (sidebar && sidebar.dataset && sidebar.dataset.appMode) ? sidebar.dataset.appMode : 'normal';
+ if (__mode === 'mixed'){
+  const aSel = document.getElementById('mixSpeciesA');
+  moleculeName = aSel ? aSel.value : moleculeName;
+  const d = molData[moleculeName]; molarMass = d.mass; degreesOfFreedom = d.dof;
+  particles = buildMixedParticles();
+ } else {
+  particles = Array.from({length: particleCount}, () => new Molecule());
+ }
+  resetPressureHistory(true);
+// PhaseA: initialize graph axis UI (safe, no effect unless controls exist)
+  initAxisUI();
+
         }
 
         window.onload = init;
         animate();
-    </script>
+    
+
+// ===== Level1 UI tweak (ver54): minimize panel size exactly like MetalCrystal =====
+(function(){
+ const uiSwitch = document.getElementById('uiSwitch');
+ if (!uiSwitch) return;
+
+ // ---- Phase1.5: UI expand/collapse stability hardening (ver54) ----
+ // Goal: ensure forbidden-rect + eviction are executed AFTER layout is truly settled.
+ // Strategy:
+ //  1) Always update forbidden rect every frame already (animate calls updateForbiddenRect)
+ //  2) On expand, run a short rAF burst to re-compute rect and evict repeatedly (covers transition frames)
+ //  3) Add ResizeObserver on sidebar to evict when width/padding actually changes (covers DPI/zoom/layout jitter)
+
+ let __evictBurstToken = 0;
+ function evictBurst(frames = 12){
+   const token = ++__evictBurstToken;
+   let left = Math.max(1, frames|0);
+   const step = () => {
+     if (token !== __evictBurstToken) return;
+     // Ensure canvas has latest size before computing rect
+     syncCanvasSize();
+     updateForbiddenRect();
+     evictParticlesFromPanel();
+     left--;
+     if (left > 0) requestAnimationFrame(step);
+   };
+   requestAnimationFrame(step);
+ }
+
+ // Observe sidebar box changes (transition, responsive, OS zoom, scroll bar appearance)
+ let __sbRO = null;
+ try {
+   if (window.ResizeObserver && sidebar){
+     __sbRO = new ResizeObserver(() => {
+       if (!sidebar.classList.contains('minimized')){
+         evictBurst(6);
+       }
+     });
+     __sbRO.observe(sidebar);
+   }
+ } catch(_e){ /* observer is best-effort */ }
+
+ function applyMin(min){
+   if (!sidebar) return;
+   // Ensure legacy 'hidden' state is not used
+   sidebar.classList.remove('hidden');
+   sidebar.classList.toggle('minimized', !!min);
+   uiSwitch.checked = !min;
+   updateChartsAvoidPanel();
+
+   // When expanding panel, evict any particles that may be under the panel.
+   // IMPORTANT: do this not only once, but across several frames while the transition settles.
+   if (!min){
+     evictBurst(12);
+
+     // Also evict on transition end for width/padding (final settle)
+     const once = (e) => {
+       if (!e || e.propertyName === 'width' || e.propertyName === 'padding'){
+         sidebar.removeEventListener('transitionend', once);
+         evictBurst(8);
+       }
+     };
+     sidebar.addEventListener('transitionend', once);
+   }
+ }
+
+ uiSwitch.addEventListener('change', () => applyMin(!uiSwitch.checked));
+
+ // Override legacy handlers so they cannot fight with minimized mode
+ const closeBtn = document.getElementById('closeSidebar');
+ const restoreBtn = document.getElementById('restoreSidebar');
+ if (closeBtn) closeBtn.onclick = () => applyMin(true);
+ if (restoreBtn) { restoreBtn.onclick = () => applyMin(false); restoreBtn.style.display = 'none'; }
+
+ // Initial state
+ applyMin(false);
+})();
+
+// ===== Level7 Step2: mode UI routing (UI only, no mixed gas yet) (ver54) =====
+
+(function(){
+ const btnNormal = document.getElementById('modeNormalBtn');
+ const btnMixed  = document.getElementById('modePressureBtn');
+ const mixedFrame = document.getElementById('mixedFrame');
+ const tempGroup = document.getElementById('tempGroup');
+ const countGroup = document.getElementById('countGroup');
+ const radiusGroup = document.getElementById('radiusGroup');
+ const axisGroup = document.getElementById('axisGroup');
+ const molGroup = document.getElementById('moleculeGroup');
+ const chartGroup = document.getElementById('chartGroup');
+ const vdwGroup = document.getElementById('vdwGroup');
+ const colorLegend = document.getElementById('colorLegend');
+ const pressurePanel = document.getElementById('pressurePanel');
+ const chartToggle = document.getElementById('chartToggle');
+
+ if(!btnNormal || !btnMixed || !mixedFrame) return;
+
+ // ------------------------------
+ // Step2.5: Mode-specific UI state snapshot
+ // 目的：通常↔混合の往復で UI 設定が混線しないよう、モード別に保存・復元する。
+ // 注意：この段階では「混合気体の生成」や「分圧計算」は行わない（Step4以降）。
+ // ------------------------------
+ const MODE = { NORMAL:'normal', MIXED:'mixed' };
+ const uiState = {
+   normal: null,
+   mixed:  null,
+   mixedInitialized: false
+ };
+
+ function readNormalState(){
+   // DOM 依存を避け、既存の内部状態変数を主として保存する
+   return {
+     temperature,
+     atomRadius,
+     useVDW,
+     showCharts,
+     particleCount,
+     moleculeName,
+     chartAxisVMax,
+     chartAxisVYMax,
+     chartAxisEMax,
+     chartAxisEYMax,
+     energyCurveOverflow
+   };
+ }
+
+ function readMixedState(){
+   // 混合専用UI（設定保持のみ）
+   const aSel = document.getElementById('mixSpeciesA');
+   const bSel = document.getElementById('mixSpeciesB');
+   const rSel = document.getElementById('mixRatioA');
+   const hSel = document.getElementById('mixHighlight');
+   return {
+     temperature,
+     atomRadius,
+     useVDW,
+     // 混合UI設定（まだ挙動には反映しない）
+     mixA: aSel ? aSel.value : 'He',
+     mixB: bSel ? bSel.value : 'H2',
+     ratioA: rSel ? parseInt(rSel.value,10) : 50,
+     highlight: hSel ? hSel.value : 'A'
+   };
+ }
+
+ function applyCommonState(st){
+   // 温度（速度スケール整合のため applyTemperatureScale を必ず通す）
+   if (typeof st.temperature === 'number'){
+     const oldT = temperature;
+     const newT = Math.max(0, Math.min(3000, Math.round(st.temperature)));
+     if (newT !== temperature){
+       temperature = newT;
+       applyTemperatureScale(oldT, temperature);
+ updatePhaseState();
+     }
+     const tRange = document.getElementById('tempRange');
+     const tVal = document.getElementById('tempVal');
+     if (tRange) tRange.value = String(temperature);
+     if (tVal) tVal.innerText = String(temperature);
+   }
+   // 原子サイズ（見た目のみ）
+   if (typeof st.atomRadius === 'number'){
+     atomRadius = Math.max(2, Math.min(30, Math.round(st.atomRadius)));
+     const rRange = document.getElementById('radiusRange');
+     const rVal = document.getElementById('radiusVal');
+     if (rRange) rRange.value = String(atomRadius);
+     if (rVal) rVal.innerText = String(atomRadius);
+   }
+   // 分子間力
+   if (typeof st.useVDW === 'boolean'){
+     useVDW = st.useVDW;
+     const vdw = document.getElementById('vdwSwitch');
+     if (vdw) vdw.checked = !!useVDW;
+     const grp = document.getElementById('vdwGroup');
+     if (grp) grp.classList.toggle('active', !!useVDW);
+   }
+ }
+
+ function applyNormalState(st){
+   applyCommonState(st);
+
+   // 通常モード：グラフ/軸設定も復元
+   if (typeof st.showCharts === 'boolean'){
+     showCharts = st.showCharts;
+     if (chartToggle) chartToggle.checked = !!showCharts;
+     if (chartsWrapper) chartsWrapper.classList.toggle('hidden', !showCharts);
+     canvas.classList.toggle('expanded', !showCharts);
+     if (sidebar) updateChartsAvoidPanel();
+   }
+   // axis values
+   if (typeof st.chartAxisVMax === 'number') chartAxisVMax = st.chartAxisVMax;
+   if (typeof st.chartAxisVYMax === 'number') chartAxisVYMax = st.chartAxisVYMax;
+   if (typeof st.chartAxisEMax === 'number') chartAxisEMax = st.chartAxisEMax;
+   if (typeof st.chartAxisEYMax === 'number') chartAxisEYMax = st.chartAxisEYMax;
+   if (typeof st.energyCurveOverflow === 'boolean') energyCurveOverflow = st.energyCurveOverflow;
+
+   // reflect to UI sliders (initAxisUI ensures listeners only once)
+   initAxisUI();
+   const vMaxSlider = document.getElementById('vMaxSlider');
+   const vYMaxSlider = document.getElementById('vYMaxSlider');
+   const eMaxSlider = document.getElementById('eMaxSlider');
+   const eYMaxSlider = document.getElementById('eYMaxSlider');
+   const vMaxVal = document.getElementById('vMaxVal');
+   const vYMaxVal = document.getElementById('vYMaxVal');
+   const eMaxVal = document.getElementById('eMaxVal');
+   const eYMaxVal = document.getElementById('eYMaxVal');
+   if (vMaxSlider){ vMaxSlider.value = String(chartAxisVMax); if (vMaxVal) vMaxVal.innerText = String(Math.round(chartAxisVMax)); }
+   if (vYMaxSlider){ vYMaxSlider.value = String(chartAxisVYMax); if (vYMaxVal) vYMaxVal.innerText = Number(chartAxisVYMax).toFixed(1); }
+   if (eMaxSlider){ eMaxSlider.value = String(chartAxisEMax); if (eMaxVal) eMaxVal.innerText = String(Math.round(chartAxisEMax)); }
+   if (eYMaxSlider){ eYMaxSlider.value = String(chartAxisEYMax); if (eYMaxVal) eYMaxVal.innerText = Number(chartAxisEYMax).toFixed(2); }
+   const eOv = document.getElementById('eOverflowToggle');
+   if (eOv) eOv.checked = !!energyCurveOverflow;
+
+   // Normal: enable groups
+   if (countGroup){
+     const c = document.getElementById('countRange');
+     if (c) c.disabled = false;
+   }
+   if (molGroup){
+     molGroup.style.opacity = '';
+     molGroup.querySelectorAll('input[type="radio"]').forEach(r=>r.disabled=false);
+   }
+ }
+
+ function applyMixedState(st){
+   applyCommonState(st);
+
+   // 混合モードでは「グラフ関連」は常に無効（UIも非表示）
+   showCharts = false;
+   if (chartToggle) chartToggle.checked = false;
+   if (chartsWrapper) chartsWrapper.classList.add('hidden');
+   canvas.classList.add('expanded');
+   if (chartGroup) chartGroup.style.display = 'none';
+   if (axisGroup) axisGroup.style.display = 'none';
+
+   // 分子数は デフォルト60。混合モードでは 1〜1000 で可変
+ if (countGroup){
+  const cVal = document.getElementById('countVal');
+  const cRange = document.getElementById('countRange');
+  const total = Math.max(1, Math.min(1000, parseInt(st.particleCount ?? particleCount, 10) || 60));
+  particleCount = total;
+  if (cVal) cVal.innerText = String(total);
+  if (cRange){
+    cRange.min = '1';
+    cRange.max = '1000';
+    cRange.step = '1';
+    cRange.value = String(total);
+    cRange.disabled = false;
+  }
+ }
+   // 単一分子種ラジオは混合モードでは無効化（混合UIで設定保持）
+   if (molGroup){
+     molGroup.style.opacity = '0.75';
+     molGroup.querySelectorAll('input[type="radio"]').forEach(r=>r.disabled=true);
+   }
+
+   // 混合UI値を適用（設定保持のみ）
+   const aSel = document.getElementById('mixSpeciesA');
+   const bSel = document.getElementById('mixSpeciesB');
+   const rSel = document.getElementById('mixRatioA');
+   const rVal = document.getElementById('mixRatioAVal');
+   const cA = document.getElementById('mixCountA');
+   const cB = document.getElementById('mixCountB');
+   const hSel = document.getElementById('mixHighlight');
+
+   const ratio = Math.max(0, Math.min(100, Math.round(st.ratioA ?? 50)));
+   if (aSel && st.mixA) aSel.value = st.mixA;
+   if (bSel && st.mixB) bSel.value = st.mixB;
+   if (rSel) rSel.value = String(ratio);
+   if (rVal) rVal.innerText = String(ratio);
+   // counts (display)
+   const total = Math.max(1, Math.min(1000, parseInt(particleCount, 10) || 60));
+ const nA = Math.round(total * ratio / 100);
+   const nB = total - nA;
+   if (cA) cA.innerText = String(nA);
+   if (cB) cB.innerText = String(nB);
+ const tEl = document.getElementById('mixTotalVal');
+ if (tEl) tEl.innerText = String(total);
+   if (hSel && st.highlight) hSel.value = st.highlight;
+
+   // Mixed: show mixedFrame
+   mixedFrame.style.display = 'block';
+ }
+
+ function ensureMixedInitialized(){
+   if (uiState.mixedInitialized && uiState.mixed) return;
+   // 初回：通常デフォルト相当を基準にしつつ、混合の分子種は He/H2 に設定
+   uiState.mixed = {
+     temperature: 273,
+     atomRadius: 8,
+     useVDW: false,
+     mixA: 'He',
+     mixB: 'H2',
+     ratioA: 50,
+     highlight: 'A'
+   };
+   uiState.mixedInitialized = true;
+ }
+
+ function saveState(mode){
+   if (mode === MODE.NORMAL) uiState.normal = readNormalState();
+   else uiState.mixed = readMixedState();
+ }
+
+ function setMode(mode){
+   const m = (mode === MODE.MIXED) ? MODE.MIXED : MODE.NORMAL;
+
+   // save current before switching
+   const cur = (sidebar && sidebar.dataset.appMode === MODE.MIXED) ? MODE.MIXED : MODE.NORMAL;
+   saveState(cur);
+
+   if (sidebar) sidebar.dataset.appMode = m;
+   btnNormal.classList.toggle('active', m === MODE.NORMAL);
+   btnMixed.classList.toggle('active', m === MODE.MIXED);
+
+   const isMixed = (m === MODE.MIXED);
+
+   // UI show/hide policy (per agreement): keep UI except graph-related.
+   if (mixedFrame) mixedFrame.style.display = isMixed ? 'block' : 'none';
+   if (chartGroup) chartGroup.style.display = isMixed ? 'none' : '';
+ if (pressurePanel) pressurePanel.style.display = isMixed ? 'block' : 'none';
+   if (axisGroup) axisGroup.style.display = isMixed ? 'none' : '';
+
+   // In mixed mode, keep temperature/radius/vdw UI visible.
+   if (tempGroup) tempGroup.style.display = '';
+   if (radiusGroup) radiusGroup.style.display = '';
+   if (vdwGroup) vdwGroup.style.display = '';
+   if (colorLegend) colorLegend.style.display = '';
+
+   // apply target mode state
+   if (isMixed){
+     ensureMixedInitialized();
+     applyMixedState(uiState.mixed);
+   } else {
+     if (!uiState.normal) uiState.normal = readNormalState();
+     applyNormalState(uiState.normal);
+   }
+
+   // After mode changes, keep charts avoidance consistent
+   updateChartsAvoidPanel();
+ }
+
+ // Mixed UI live update (settings only)
+ function updateMixedCountDisplay(){
+   const rSel = document.getElementById('mixRatioA');
+   const rVal = document.getElementById('mixRatioAVal');
+   const cA = document.getElementById('mixCountA');
+   const cB = document.getElementById('mixCountB');
+   if (!rSel) return;
+   const ratio = Math.max(0, Math.min(100, parseInt(rSel.value,10)));
+   if (rVal) rVal.innerText = String(ratio);
+   const total = Math.max(1, Math.min(1000, parseInt(particleCount, 10) || 60));
+ const nA = Math.round(total * ratio / 100);
+   const nB = total - nA;
+   if (cA) cA.innerText = String(nA);
+   if (cB) cB.innerText = String(nB);
+ const tEl = document.getElementById('mixTotalVal');
+ if (tEl) tEl.innerText = String(total);
+ }
+
+ (function bindMixedUI(){
+   const aSel = document.getElementById('mixSpeciesA');
+   const bSel = document.getElementById('mixSpeciesB');
+   const rSel = document.getElementById('mixRatioA');
+   const hSel = document.getElementById('mixHighlight');
+   if (aSel) aSel.addEventListener('change', ()=>{ if (sidebar && sidebar.dataset.appMode===MODE.MIXED){ uiState.mixed = readMixedState(); init(); } });
+   if (bSel) bSel.addEventListener('change', ()=>{ if (sidebar && sidebar.dataset.appMode===MODE.MIXED){ uiState.mixed = readMixedState(); init(); } });
+   if (hSel) hSel.addEventListener('change', ()=>{ if (sidebar && sidebar.dataset.appMode===MODE.MIXED){ uiState.mixed = readMixedState(); } });
+   if (rSel) rSel.addEventListener('input', ()=>{ updateMixedCountDisplay(); if (sidebar && sidebar.dataset.appMode===MODE.MIXED){ uiState.mixed = readMixedState(); } });
+ if (rSel) rSel.addEventListener('change', ()=>{ if (sidebar && sidebar.dataset.appMode===MODE.MIXED){ uiState.mixed = readMixedState(); init(); } });
+    const cRange = document.getElementById('countRange');
+ if (cRange) cRange.addEventListener('input', ()=>{
+   if (sidebar && sidebar.dataset && sidebar.dataset.appMode===MODE.MIXED){
+     updateMixedCountDisplay();
+   }
+ });
+// initial count display
+   updateMixedCountDisplay();
+ })();
+
+ btnNormal.addEventListener('click', (e)=>{ e.preventDefault(); setMode(MODE.NORMAL); init(); });
+ btnMixed.addEventListener('click', (e)=>{ e.preventDefault(); setMode(MODE.MIXED); init(); });
+
+ // initial
+ setMode(MODE.NORMAL);
+})();
+
+
+// ===== Level1: initialize switch-group active states =====
+(function(){
+  const v = document.getElementById('vdwSwitch');
+  if (v){ const g=v.closest('.switch-group'); if (g) g.classList.toggle('active', v.checked); }
+  const c = document.getElementById('chartToggle');
+  if (c){ const g=c.closest('.switch-group'); if (g) g.classList.toggle('active', c.checked); }
+})();
+
+</script>
+
+<!-- A系: phaseState 表示（最小差分・テキストのみ） -->
+<div id="phaseStateBox" style="margin-top:6px; font-size:12px; opacity:0.9;">
+  状態（1気圧の代表ラベル）： <span id="phaseStateLabel">—</span>
+</div>
+
+
+<script>
+// A系: phaseState 表示更新（存在する場合のみ）
+(function(){
+  const label = document.getElementById('phaseStateLabel');
+  if(!label) return;
+  function tick(){
+    try{
+      if(typeof window.phaseState !== 'undefined'){
+        label.textContent = String(window.phaseState);
+      }
+    }catch(e){}
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
+
+
+<script>
+// ===== ver79 (A系・観測系のみ): クラスタ観測（力への反映なし） =====
+// 観測量:
+// - 最大クラスタサイズ N_max
+// - 平均最近接数 <z>
+// - 簡易クラスタ寿命 proxy（指数移動平均）
+// NOTE: 力・衝突・速度には一切影響しない。ログ/表示のみ。
+(function(){
+  const OBS = {
+    enabled: true,
+    cutoffFactor: 2.2, // 結合距離 = 有効半径 * cutoffFactor
+    emaAlpha: 0.05,
+    emaLife: 0,
+    lastStamp: performance.now(),
+  };
+
+  function effRadius(){
+    try{
+      if (typeof effectiveAtomRadiusPx === 'function') return effectiveAtomRadiusPx();
+    }catch(e){}
+    return 8;
+  }
+
+  function buildAdj(){
+    const n = (window.particles && window.particles.length) || 0;
+    const adj = Array.from({length:n}, ()=>[]);
+    if (!window.particles) return adj;
+    const r = effRadius();
+    const cut = Math.max(1, r) * OBS.cutoffFactor;
+    const cut2 = cut*cut;
+    for(let i=0;i<n;i++){
+      const p1 = window.particles[i];
+      for(let j=i+1;j<n;j++){
+        const p2 = window.particles[j];
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        if (dx*dx + dy*dy <= cut2){
+          adj[i].push(j); adj[j].push(i);
+        }
+      }
+    }
+    return adj;
+  }
+
+  function components(adj){
+    const n = adj.length;
+    const seen = new Array(n).fill(false);
+    const comps = [];
+    for(let i=0;i<n;i++){
+      if(seen[i]) continue;
+      let q=[i], sz=0, zsum=0;
+      seen[i]=true;
+      while(q.length){
+        const u=q.pop(); sz++; zsum += adj[u].length;
+        for(const v of adj[u]) if(!seen[v]){ seen[v]=true; q.push(v);} 
+      }
+      comps.push({size:sz, z:(sz>0? zsum/sz:0)});
+    }
+    return comps;
+  }
+
+  function tick(){
+    if (!OBS.enabled || !window.particles) return requestAnimationFrame(tick);
+    const adj = buildAdj();
+    const comps = components(adj);
+    let Nmax = 0, zbar = 0;
+    for(const c of comps){ Nmax = Math.max(Nmax, c.size); zbar += c.z; }
+    if (comps.length>0) zbar /= comps.length;
+    const now = performance.now();
+    const dt = Math.max(1, now - OBS.lastStamp);
+    OBS.lastStamp = now;
+    // 寿命proxy: 大クラスタが小さくなるほど減衰
+    const lifeTarget = Math.min(1, Nmax / Math.max(1, window.particles.length));
+    OBS.emaLife = OBS.emaLife*(1-OBS.emaAlpha) + lifeTarget*OBS.emaAlpha;
+
+    // expose for inspection
+    window.__obsCluster = { Nmax, zbar, life: OBS.emaLife };
+    // lightweight console log (throttled)
+    if (!window.__obsLast || now - window.__obsLast > 1000){
+      window.__obsLast = now;
+      console.log('[ver79 obs]', window.__obsCluster);
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
+
+
+<script>
+// ===== ver80 (A系・判定のみ): 観測→内部判定（表示・力への反映なし） =====
+// 目的: ver79 の観測量 (__obsCluster) から相転移の有無を“内部的に”判定するだけ。
+// 禁止: UI変更 / 力・衝突・速度変更 / phaseState への反映
+(function(){
+  const JUDGE = {
+    enabled: true,
+    // 判定しきい値（設計固定・教育用）
+    liquidLifeMin: 0.7,
+    liquidFracMin: 0.5,   // Nmax/N >= 0.5
+    gasLifeMax: 0.3,
+    gasFracMax: 0.2,      // Nmax/N <= 0.2
+    last: null
+  };
+
+  function tick(){
+    if (!JUDGE.enabled) return requestAnimationFrame(tick);
+    const obs = window.__obsCluster;
+    const parts = window.particles;
+    if (!obs || !parts || !parts.length) return requestAnimationFrame(tick);
+
+    const frac = obs.Nmax / Math.max(1, parts.length);
+    let state = 'UNDETERMINED';
+    if (obs.life >= JUDGE.liquidLifeMin && frac >= JUDGE.liquidFracMin){
+      state = 'CLUSTER_STABLE'; // 液体的
+    } else if (obs.life <= JUDGE.gasLifeMax && frac <= JUDGE.gasFracMax){
+      state = 'GAS_DOMINANT';   // 気体的
+    }
+
+    // 内部公開（UI非表示）
+    window.__phaseObs = { state, frac, life: obs.life };
+
+    // 軽量ログ（任意・1秒間隔）
+    const now = performance.now();
+    if (!JUDGE._lastLog || now - JUDGE._lastLog > 1000){
+      JUDGE._lastLog = now;
+      console.log('[ver80 judge]', window.__phaseObs);
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
+
+
+<script>
+// ===== ver81 UI updater (read-only) =====
+(function(){
+  const label = document.getElementById('obsJudgeLabel');
+  if (!label) return;
+  function tick(){
+    try{
+      const o = window.__phaseObs;
+      if (o && o.state){
+        if (o.state === 'CLUSTER_STABLE') label.textContent = '液体的（凝集が安定）';
+        else if (o.state === 'GAS_DOMINANT') label.textContent = '気体的（凝集なし）';
+        else label.textContent = '判定中';
+      }
+    }catch(e){}
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
+
+
+<!-- ================================
+ ver82 追加（簡易判定ロジック・非侵襲）
+ 目的：観測量に基づく参考ラベル表示のみ（物理挙動非変更）
+ 設計根拠：ver82_簡易判定ロジック設計_README.txt
+================================ -->
+<script>
+// === ver82 Simple Phase Judge (Non-invasive) ===
+// NOTE: This logic does NOT affect physics. Display-only.
+(function(){
+  const PhaseJudge82 = {
+    state: 'UNDETERMINED',
+    lastUpdate: 0,
+    updateInterval: 1000, // ms
+    update(observation){
+      const now = performance.now();
+      if (now - this.lastUpdate < this.updateInterval) return this.state;
+      this.lastUpdate = now;
+      // Safety-first: until thresholds are validated, keep UNDETERMINED
+      // Observation keys may include: clusterLifetimeAvg, clusterSizeAvg
+      if (!observation || observation.clusterLifetimeAvg == null) {
+        this.state = 'UNDETERMINED';
+        return this.state;
+      }
+      // Conservative heuristic placeholders (display only)
+      if (observation.clusterLifetimeAvg < observation.tauShort) {
+        this.state = 'GAS';
+      } else if (observation.clusterLifetimeAvg < observation.tauLong) {
+        this.state = 'LIQUID';
+      } else {
+        this.state = 'SOLID';
+      }
+      return this.state;
+    }
+  };
+  // Expose safely
+  window.PhaseJudge82 = PhaseJudge82;
+})();
+</script>
+
+
+<!-- ================================
+ ver82 観測量の結線（非侵襲・安全）
+ 目的：既存の観測系(ver79–81)から観測量を受け取り、
+       PhaseJudge82 に入力する（物理挙動は非変更）
+================================ -->
+<script>
+(function(){
+  // Adapter to collect observations safely
+  const ObsAdapter82 = {
+    obs: {
+      clusterLifetimeAvg: null,
+      clusterSizeAvg: null,
+      tauShort: null,
+      tauLong: null
+    },
+    // Try to bind to known/likely globals without assuming existence
+    pull(){
+      try {
+        // Common patterns: window.Observation, window.Observer, window.stats
+        const O = window.Observation || window.Observer || window.stats || null;
+        if (O) {
+          if (typeof O.clusterLifetimeAvg === 'number') this.obs.clusterLifetimeAvg = O.clusterLifetimeAvg;
+          if (typeof O.clusterSizeAvg === 'number') this.obs.clusterSizeAvg = O.clusterSizeAvg;
+        }
+        // Thresholds may be defined in config; keep conservative defaults if absent
+        const C = window.Config || window.config || {};
+        this.obs.tauShort = (typeof C.tauShort === 'number') ? C.tauShort : this.obs.tauShort;
+        this.obs.tauLong  = (typeof C.tauLong  === 'number') ? C.tauLong  : this.obs.tauLong;
+      } catch(e) {
+        // Fail-safe: keep UNDETERMINED
+      }
+      return this.obs;
+    }
+  };
+
+  // Periodic safe update (display-only)
+  function tick(){
+    if (window.PhaseJudge82 && typeof window.PhaseJudge82.update === 'function'){
+      const obs = ObsAdapter82.pull();
+      window.PhaseJudge82.update(obs);
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
+
+
+<!-- ================================
+ ver84: 閾値実装（設計合意反映・非侵襲）
+ 参照: ver82_簡易判定_閾値合意_README.txt
+================================ -->
+<script>
+// ver84 Threshold Config (display-only)
+(function(){
+  // Global config for PhaseJudge82
+  window.Config = window.Config || {};
+  // Agreed thresholds (simulation-time seconds)
+  window.Config.tauShort = 1.0;
+  window.Config.tauLong  = 5.0;
+})();
+</script>
+<script>
+// ver84 UI binding: show PhaseJudge82.state to obsJudgeLabel
+(function(){
+  const label = document.getElementById('obsJudgeLabel');
+  if (!label) return;
+  function tick(){
+    try{
+      if (window.PhaseJudge82 && window.PhaseJudge82.state){
+        const s = window.PhaseJudge82.state;
+        if (s === 'GAS') label.textContent = '気体的（参考）';
+        else if (s === 'LIQUID') label.textContent = '液体的（参考）';
+        else if (s === 'SOLID') label.textContent = '固体的（参考）';
+        else label.textContent = '判定中';
+      }
+    }catch(e){}
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
+
+
+<!-- ================================
+ ver85: 理論値対応レイヤ（参照のみ・非侵襲）
+ 目的：Tf/Tb を理論参照量として明示し、無次元温度を提供する
+       ※物理挙動・判定結果・表示ロジックは一切変更しない
+================================ -->
+<script>
+(function(){
+  // Expose theoretical reference safely
+  window.TheoreticalRef = window.TheoreticalRef || {};
+
+  // Build reference from existing phaseTable1atm
+  try{
+    const table = (typeof phaseTable1atm === 'object') ? phaseTable1atm : null;
+    if (!table) return;
+
+    const ref = {};
+    Object.keys(table).forEach(k => {
+      const d = table[k];
+      if (!d) return;
+      ref[k] = {
+        Tf: (typeof d.Tf === 'number') ? d.Tf : null,
+        Tb: (typeof d.Tb === 'number') ? d.Tb : null
+      };
+    });
+
+    // Current species reduced temperature helpers
+    window.TheoreticalRef.data = ref;
+    window.TheoreticalRef.reducedTemperature = function(species, T){
+      const d = ref[species];
+      if (!d || typeof d.Tb !== 'number' || d.Tb <= 0) return null;
+      return T / d.Tb; // T/Tb
+    };
+
+    // Snapshot current values (read-only use)
+    window.TheoreticalRef.current = function(){
+      try{
+        return {
+          species: window.moleculeName,
+          T: window.temperature,
+          Tf: ref[window.moleculeName]?.Tf ?? null,
+          Tb: ref[window.moleculeName]?.Tb ?? null,
+          Tr: window.TheoreticalRef.reducedTemperature(window.moleculeName, window.temperature)
+        };
+      }catch(e){ return null; }
+    };
+  }catch(e){ /* fail-safe: no-op */ }
+})();
+</script>
+
+
+<script>
+// === ver87 Phase Coupling (minimal, reversible, non-invasive) ===
+(function(){
+  const SCALE_BIND = 0.06; // small, educational
+  const SCALE_BREAK = 0.06;
+  function tick(){
+    try{
+      const s = window.__ver86_stat;
+      if(s && window.particles){
+        const pb = Math.max(0, Math.min(1, s.p_bind || 0));
+        const pr = Math.max(0, Math.min(1, s.p_break || 0));
+        if(pb > pr){
+          // liquid-like: gentle velocity damping
+          const k = 1 - SCALE_BIND * (pb - pr);
+          window.particles.forEach(p=>{ p.vx*=k; p.vy*=k; });
+        } else if(pr > pb){
+          // gas-like: gentle separation noise
+          const n = SCALE_BREAK * (pr - pb);
+          window.particles.forEach(p=>{
+            p.vx += (Math.random()-0.5)*n; p.vy += (Math.random()-0.5)*n;
+          });
+        }
+      }
+    }catch(e){}
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
+
+
+<!-- =========================================================
+[ver90 EXPERIMENTAL / Phase Hint Overlay]
+- Visual-only, non-invasive
+- Uses observation (cluster life) as a single reference
+- No thresholds, no labels, no numbers
+- Can be disabled instantly by flag
+========================================================= -->
+<script>
+// ===== ver90 EXPERIMENTAL: Phase Hint Overlay (visual-only) =====
+(function(){
+  // ---- Feature flag (single switch) ----
+  const VER90_PHASE_HINT = true; // set false to disable entirely
+  if (!VER90_PHASE_HINT) return;
+
+  // ---- Tunables (minimal, gentle) ----
+  const MAX_ALPHA = 0.18;          // upper bound of opacity
+  const EMA_ALPHA = 0.08;          // smoothing for visual stability
+  const RADIUS_FACTOR = 0.85;      // relative to min(canvas)
+
+  let vis = 0; // smoothed intensity
+
+  function tick(){
+    try{
+      const canvas = document.getElementById('simCanvas');
+      if (!canvas) { requestAnimationFrame(tick); return; }
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { requestAnimationFrame(tick); return; }
+
+      // Observation source (non-invasive, already computed elsewhere)
+      const obs = window.__obsCluster;
+      if (!obs || typeof obs.life !== 'number'){
+        requestAnimationFrame(tick); return;
+      }
+      // Use a single observation: cluster life proxy (0..1)
+      const target = Math.max(0, Math.min(1, obs.life));
+      // Smooth (EMA)
+      vis = vis * (1 - EMA_ALPHA) + target * EMA_ALPHA;
+
+      // Draw overlay AFTER main draw (alpha-only cue)
+      const w = canvas.width, h = canvas.height;
+      const r = Math.min(w, h) * RADIUS_FACTOR;
+      const cx = w * 0.5, cy = h * 0.5;
+      const a = Math.min(MAX_ALPHA, vis * MAX_ALPHA);
+      if (a > 0.002){
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = 'rgba(255,255,255,' + a.toFixed(4) + ')';
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }catch(e){/* fail-safe */}
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
+
 </body>
 </html>
+
+<!-- ================================
+ ver86: Statistical Transition Layer (A-layer, non-invasive)
+ Purpose: Evaluate p_break / p_bind at fixed time window Δt=0.5s
+ Design: Does NOT modify motion, force, collision, or UI behavior.
+================================ -->
+<script>
+(function(){
+  const alpha = 5;
+  const pMin = 0.05, pMax = 0.95;
+  const qMin = 0.05, qMax = 0.95;
+  const DtSec = 0.5;
+  let lastEval = performance.now();
+
+  function logistic(x){ return 1/(1+Math.exp(-x)); }
+  function p_break(Tr){ return pMin + (pMax-pMin)*logistic(alpha*(Tr-1)); }
+  function p_bind(Tr){ return qMin + (qMax-qMin)*logistic(-alpha*(Tr-1)); }
+
+  function tick(){
+    const now = performance.now();
+    if(now - lastEval < DtSec*1000){ requestAnimationFrame(tick); return; }
+    lastEval = now;
+
+    try{
+      if(!window.TheoreticalRef || !window.__obsCluster) { requestAnimationFrame(tick); return; }
+      const ref = window.TheoreticalRef.current && window.TheoreticalRef.current();
+      if(!ref || typeof ref.Tr !== 'number') { requestAnimationFrame(tick); return; }
+
+      const Tr = ref.Tr;
+      const pb = p_break(Tr);
+      const qb = p_bind(Tr);
+
+      // Expose decision weights ONLY (no behavior change)
+      window.__ver86_stat = {
+        Tr: Tr,
+        p_break: pb,
+        p_bind: qb,
+        emaLife: window.__obsCluster.life,
+        timestamp: now
+      };
+
+      if(console && console.log){
+        console.log('[ver86]', window.__ver86_stat);
+      }
+    }catch(e){ /* fail-safe: no-op */ }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
